@@ -1,0 +1,14 @@
+{
+ "voices": {"N": ["am_michael", 1.1], "H": ["am_puck", 1.12], "S": ["bm_lewis", 0.98]},
+ "beats": [
+  {"id": "intro",    "min": 3.6, "lead": 0.3, "lines": [["N", "Max was almost at the end of the hardest obby ever!"]]},
+  {"id": "wobble",   "min": 2.2, "lead": 0.55, "lines": [["H", "Whoa, whoa, whoa!"]]},
+  {"id": "stranger", "min": 3.0, "lead": 0.2, "lines": [["N", "Then, a stranger popped up."], ["S", "Psst! Want ten thousand free coins?"]]},
+  {"id": "tempt",    "min": 3.0, "lead": 0.15, "lines": [["H", "Ten thousand?! Yes please!"], ["S", "Easy. Just tell me your password."]]},
+  {"id": "stop",     "min": 3.5, "lead": 0.15, "lines": [["N", "Wait! Stop!"], ["N", "Nobody needs your password to give you something. That's a scam!"]]},
+  {"id": "block",    "min": 4.0, "lead": 0.2, "lines": [["H", "Nope! Not falling for that!"], ["N", "So Max blocked him, reported him, and told a grown-up."]]},
+  {"id": "win",      "min": 3.5, "lead": 1.9, "lines": [["H", "Yes! I did it!"], ["N", "He beat the obby, and kept his account safe!"]]},
+  {"id": "lesson",   "min": 4.0, "lead": 0.25, "lines": [["N", "Remember: never share your password. Not for coins, not for anyone!"]]},
+  {"id": "sub",      "min": 3.4, "lead": 0.35, "lines": [["N", "Subscribe for more!"]]}
+ ]
+}
