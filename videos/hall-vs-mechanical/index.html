@@ -254,7 +254,8 @@ function ruler(x, y0, y1, d, acts, color) {
 
 // ---------------------------------------------------------------- scenes
 const EVENTS = [];
-const ev = (t, type, gain = 1) => EVENTS.push({ t: +t.toFixed(3), type, gain });
+const ev = (t, type, gain = 1, idx) => EVENTS.push({ t: +t.toFixed(3), type, gain, idx });
+let SUB_T = 3.0;                     // when the subscribe pop-up lands in the outro
 const Y0 = 560, CX = 600, RX = 150, RY0 = 620, RY1 = 1080;
 
 // 1. hook
@@ -447,17 +448,56 @@ function outro(lt) {
   popLine([['So', COL.text], ['which', COL.text], ['one?', COL.text]], W / 2, 410, 96, 'IT', .05, lt);
   card(500, COL.hall, 'HALL', 'Competitive gaming', 'speed + rapid trigger', prog(lt, .35, .75), pulse(lt, 1.4));
   card(820, COL.mech, 'MECH', 'Typing & budget', 'feel, sound, price', prog(lt, .7, 1.1), pulse(lt, 1.8));
-  popLine([['Which', COL.text], ['team', COL.text], ['are', COL.text], ['you?', COL.text]], W / 2, 1270, 68, 'IT', 2.1, lt);
-  text('tell me in the comments', W / 2, 1345, { f: 'M', size: 30, color: COL.muted, alpha: prog(lt, 2.5, 2.9) });
+  popLine([['Which', COL.text], ['team', COL.text], ['are', COL.text], ['you?', COL.text]], W / 2, 1200, 64, 'IT', 2.1, lt);
+  text('tell me in the comments', W / 2, 1262, { f: 'M', size: 28, color: COL.muted, alpha: prog(lt, 2.5, 2.9) });
+  subscribe(lt, SUB_T);
+}
+function subscribe(lt, t0) {
+  const k = prog(lt, t0, t0 + .45); if (k <= 0) return;
+  const tap = t0 + .95, done = lt >= tap, press = pulse(lt, tap - .06, .16);
+  X.save(); X.globalAlpha = clamp(k * 2.5);
+  X.translate(W / 2, 1400 + (1 - eo(k)) * 140); const s = lerp(.7, 1, eob(k)); X.scale(s, s);
+  X.shadowColor = 'rgba(0,0,0,0.5)'; X.shadowBlur = 40; X.shadowOffsetY = 12;
+  rr(-400, -70, 800, 140, 70); X.fillStyle = '#FFFFFF'; X.fill(); X.shadowColor = 'transparent';
+  const g = X.createLinearGradient(-378, -48, -282, 48); g.addColorStop(0, COL.hall); g.addColorStop(1, COL.mech);
+  X.beginPath(); X.arc(-330, 0, 48, 0, 7); X.fillStyle = g; X.fill();
+  rr(-352, -22, 44, 40, 8); X.fillStyle = 'rgba(255,255,255,0.92)'; X.fill();
+  text('W', -330, 7, { f: 'IT', size: 26, color: '#0A0C11' });
+  text('Subscribe for more', -262, -6, { f: 'I7', size: 36, color: '#0A0C11', align: 'left' });
+  text('keyboard tech, explained', -262, 30, { f: 'I6', size: 24, color: '#6B7280', align: 'left' });
+  X.save(); X.translate(262, 0); const bs = 1 - .08 * press; X.scale(bs, bs);
+  rr(-112, -40, 224, 80, 40); X.fillStyle = done ? '#E5E7EB' : '#FF0033'; X.fill();
+  text(done ? 'SUBSCRIBED' : 'SUBSCRIBE', 0, 9, { f: 'I7', size: done ? 24 : 27, color: done ? '#4B5563' : '#FFFFFF', ls: '1px' });
+  X.restore();
+  if (done) {                                              // ripple from the tap
+    const r = prog(lt, tap, tap + .5);
+    X.beginPath(); X.arc(262, 0, 30 + 120 * eo(r), 0, 7); X.strokeStyle = `rgba(255,0,51,${.6 * (1 - r)})`; X.lineWidth = 6; X.stroke();
+  }
+  // the hand that taps it
+  const m = eio(prog(lt, t0 + .4, tap - .05)), out = eio(prog(lt, tap + .35, tap + .8));
+  const cx = lerp(420, 290, m) + out * 220, cy = lerp(200, 22, m) + out * 160;
+  if (out < 1) {
+    X.translate(cx, cy); const cs = 1 - .15 * press; X.scale(cs, cs);
+    X.beginPath(); X.moveTo(0, 0); X.lineTo(0, 58); X.lineTo(15, 45); X.lineTo(27, 70); X.lineTo(38, 65); X.lineTo(27, 41); X.lineTo(46, 41); X.closePath();
+    X.fillStyle = '#FFFFFF'; X.fill(); X.strokeStyle = '#0A0C11'; X.lineWidth = 4; X.lineJoin = 'round'; X.stroke();
+  }
+  X.restore();
 }
 outro.dur = 4.0;
-outro.events = a => { ev(a + .35, 'pop'); ev(a + .7, 'pop'); ev(a + 1.43, 'hall'); ev(a + 1.83, 'click'); ev(a + 2.1, 'boom', .5); };
+outro.events = a => { ev(a + .35, 'pop'); ev(a + .7, 'pop'); ev(a + 1.43, 'hall'); ev(a + 1.83, 'click'); ev(a + 2.1, 'boom', .5);
+  ev(a + SUB_T, 'pop'); ev(a + SUB_T + .95, 'tick', 1.4); };
 
 // ---------------------------------------------------------------- timeline
+const SCENES = [hook, mech, hall, rt, score, outro], VO = window.VO, LEAD = .2;
+if (VO) {                            // stretch each scene to fit its voiceover line; the outro has a second line for the pop-up
+  SCENES.slice(0, 5).forEach((f, i) => { f.dur = Math.max(f.dur, LEAD + VO[i] + .35); });
+  SUB_T = Math.max(2.6, LEAD + VO[5] + .2); outro.dur = SUB_T + VO[6] + 1.9;
+} else outro.dur = SUB_T + 2.6;
 const SC = []; let acc = 0;
-for (const f of [hook, mech, hall, rt, score, outro]) { SC.push({ a: acc, b: acc + f.dur, draw: f }); acc += f.dur; }
+for (const f of SCENES) { SC.push({ a: acc, b: acc + f.dur, draw: f }); acc += f.dur; }
 const TOTAL = acc, TR = .18;
-SC.forEach((s, i) => { s.draw.events(s.a); if (i) ev(s.a - .2, 'whoosh'); });
+SC.forEach((s, i) => { s.draw.events(s.a); if (i) ev(s.a - .2, 'whoosh'); if (VO) ev(s.a + LEAD, 'vo', 1, i); });
+if (VO) ev(SC[5].a + SUB_T + .1, 'vo', 1, 6);
 EVENTS.sort((p, q) => p.t - q.t);
 
 function speedLines(t) {

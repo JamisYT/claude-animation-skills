@@ -79,7 +79,23 @@ def tick():
 
 
 SOUNDS = {k: v() for k, v in dict(click=click, clack=clack, hall=hall, whoosh=whoosh, boom=boom, drop=drop, pop=pop, tick=tick).items()}
+voice = np.zeros(n)
+
+
+def load_vo(i):
+    with wave.open(str(HERE / 'vo' / f'line_{i:02d}.wav')) as w:
+        sr, ch, sw = w.getframerate(), w.getnchannels(), w.getsampwidth()
+        raw = w.readframes(w.getnframes())
+    x = np.frombuffer(raw, dtype={2: np.int16, 4: np.int32}[sw]).astype(float) / (2 ** (8 * sw - 1))
+    x = x.reshape(-1, ch).mean(1)
+    return np.interp(np.arange(int(len(x) * SR / sr)) * sr / SR, np.arange(len(x)), x)
+
+
 for e in spec['events']:
+    if e['type'] == 'vo':
+        s = load_vo(e['idx']); s = s / (np.abs(s).max() + 1e-9) * .85
+        i = int(e['t'] * SR); j = min(n, i + len(s)); voice[i:j] += s[:j - i]
+        continue
     s = SOUNDS[e['type']] * e['gain']
     i = int(e['t'] * SR)
     if e['type'] == 'whoosh':
@@ -111,7 +127,8 @@ while k * beat < total - .5:
         h = int((k + .5) * beat * SR); music[h:h + len(hat)] += hat[:max(0, min(len(hat), n - h))]
     k += 1
 fade = np.clip((total - t_all) / 1.2, 0, 1)
-mix = fx + music * fade
+duck = 1 - .55 * np.clip(lowpass(np.abs(voice)[::64] * 6, .05).repeat(64)[:n], 0, 1)
+mix = voice + fx * (.55 + .45 * duck) + music * fade * duck
 mix = np.tanh(mix * 1.1) * .9
 st = np.stack([mix, mix], 1)
 pcm = (st * 32767).astype(np.int16)

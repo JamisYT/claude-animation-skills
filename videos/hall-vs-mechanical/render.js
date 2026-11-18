@@ -9,6 +9,8 @@ const FPS = 30, HERE = __dirname;
   const snapArg = process.argv.indexOf('--snap');
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1080, height: 1920 } });
+  const voFile = path.join(HERE, 'vo', 'vo.json');
+  if (fs.existsSync(voFile)) await page.addInitScript(d => { window.VO = d; }, JSON.parse(fs.readFileSync(voFile)).durs);
   await page.goto('file://' + path.join(HERE, 'index.html'));
   await page.evaluate(async () => { await Promise.all(['IT', 'I7', 'I6', 'M'].map(f => document.fonts.load(`40px ${f}`))); });
   const { total, events } = await page.evaluate(() => ({ total: window.TOTAL, events: window.EVENTS }));
