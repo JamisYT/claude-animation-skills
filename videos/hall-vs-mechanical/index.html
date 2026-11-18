@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<style>
+@font-face{font-family:'IT';src:url(../../kit/fonts/inter-tight-latin-800-normal.woff2) format('woff2')}
+@font-face{font-family:'I7';src:url(../../kit/fonts/inter-700-normal.woff2) format('woff2')}
+@font-face{font-family:'I6';src:url(../../kit/fonts/inter-600-normal.woff2) format('woff2')}
+@font-face{font-family:'M';src:url(../../kit/fonts/jetbrains-mono-latin-500-normal.woff2) format('woff2')}
+html,body{margin:0;background:#000;width:1080px;height:1920px;overflow:hidden}
+canvas{display:block}
+</style></head>
+<body><canvas id="c" width="1080" height="1920"></canvas>
+<script>
+// Hall effect vs mechanical: a 1080x1920 short. render(t) draws the frame at time t (seconds).
+const W = 1080, H = 1920;
+const C = document.getElementById('c'), X = C.getContext('2d');
+const COL = { bg: '#0A0C11', text: '#F3F5F9', muted: '#8C95A8', dim: '#3A4150', mech: '#FF8A3D', hall: '#35D3FF',
+  pcb: '#145A39', copper: '#D9A55B', N: '#FF4D5E', S: '#4C7DFF' };
+
+// ---------------------------------------------------------------- helpers
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const prog = (t, a, b) => clamp((t - a) / (b - a));
+const eo = t => 1 - Math.pow(1 - t, 3);
+const eio = t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+const eob = t => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); };
+const ss = (a, b, x) => { const t = clamp((x - a) / (b - a)); return t * t * (3 - 2 * t); };
+const win = (lt, a, b) => prog(lt, a, a + .3) * (1 - prog(lt, b - .25, b));
+function rgba(hex, a) { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`; }
+function shade(hex, f) {
+  const n = parseInt(hex.slice(1), 16); let r = n >> 16, g = (n >> 8) & 255, b = n & 255;
+  if (f > 0) { r += (255 - r) * f; g += (255 - g) * f; b += (255 - b) * f; } else { r *= 1 + f; g *= 1 + f; b *= 1 + f; }
+  return `rgb(${r | 0},${g | 0},${b | 0})`;
+}
+function track(keys) {
+  return lt => {
+    if (lt <= keys[0][0]) return keys[0][1];
+    for (let i = 1; i < keys.length; i++) if (lt <= keys[i][0]) {
+      const [t0, v0] = keys[i - 1], [t1, v1] = keys[i];
+      return lerp(v0, v1, eio(prog(lt, t0, t1)));
+    }
+    return keys[keys.length - 1][1];
+  };
+}
+function crossings(f, a, b, step = 1 / 240) {
+  const out = []; let prev = f(a);
+  for (let x = a + step; x <= b; x += step) { const v = f(x); if (prev < 0 && v >= 0) out.push(x); prev = v; }
+  return out;
+}
+const since = (lt, times) => { let s = 99; for (const c of times) if (lt >= c) s = Math.min(s, lt - c); return s; };
+const pulse = (lt, t0, d = .26) => Math.sin(Math.PI * prog(lt, t0, t0 + d));
+function rr(x, y, w, h, r) { X.beginPath(); X.roundRect(x, y, w, h, r); }
+function font(f, s) { X.font = `${s}px ${f}`; }
+function text(s, x, y, { f = 'I7', size = 40, color = COL.text, align = 'center', alpha = 1, base = 'alphabetic', ls = '0px' } = {}) {
+  X.save(); X.globalAlpha *= alpha; font(f, size); X.letterSpacing = ls; X.fillStyle = color; X.textAlign = align;
+  X.textBaseline = base; X.fillText(s, x, y); X.restore();
+}
+function glow(x, y, r, color, a) {
+  if (a <= 0) return;
+  const g = X.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, rgba(color, Math.min(1, a))); g.addColorStop(1, rgba(color, 0));
+  X.fillStyle = g; X.fillRect(x - r, y - r, 2 * r, 2 * r);
+}
+// words pop in one by one: parts = [[word, color], ...]
+function popLine(parts, cx, y, size, f, t0, lt, stagger = .07) {
+  font(f, size); const sp = size * .26;
+  const ws = parts.map(p => X.measureText(p[0]).width);
+  let x = cx - (ws.reduce((a, b) => a + b, 0) + sp * (parts.length - 1)) / 2;
+  parts.forEach((p, i) => {
+    const k = prog(lt, t0 + i * stagger, t0 + i * stagger + .35);
+    if (k > 0) {
+      const s = lerp(.4, 1, eob(k));
+      X.save(); X.translate(x + ws[i] / 2, y); X.scale(s, s); X.globalAlpha *= clamp(k * 2.5);
+      font(f, size); X.fillStyle = p[1]; X.textAlign = 'center'; X.fillText(p[0], 0, 0); X.restore();
+    }
+    x += ws[i] + sp;
+  });
+}
+function tag(label, cx, y, color, k) {
+  if (k <= 0) return;
+  X.save(); X.globalAlpha *= clamp(k * 2); font('I7', 30); X.letterSpacing = '5px';
+  const w = X.measureText(label).width + 60, s = lerp(.6, 1, eob(k));
+  X.translate(cx, y); X.scale(s, s);
+  rr(-w / 2, -31, w, 62, 31); X.fillStyle = rgba(color, .14); X.fill(); X.lineWidth = 2.5; X.strokeStyle = rgba(color, .75); X.stroke();
+  X.fillStyle = color; X.textAlign = 'center'; X.textBaseline = 'middle'; X.fillText(label, 2.5, 2); X.restore();
+}
+// caption card; lines = [[[text, color], ...], ...]
+function caption(lines, y, k, size = 46) {
+  if (k <= 0) return;
+  X.save(); X.globalAlpha *= clamp(k); const dy = (1 - eo(k)) * 30; font('I7', size);
+  const lw = lines.map(l => l.reduce((a, p) => a + X.measureText(p[0]).width, 0));
+  const w = Math.max(...lw) + 84, lh = size * 1.32, h = lines.length * lh + 46;
+  rr(W / 2 - w / 2, y + dy, w, h, 30); X.fillStyle = 'rgba(19,23,32,0.94)'; X.fill();
+  X.strokeStyle = 'rgba(255,255,255,0.09)'; X.lineWidth = 2; X.stroke();
+  X.textBaseline = 'middle'; X.textAlign = 'left';
+  lines.forEach((l, i) => {
+    let x = W / 2 - lw[i] / 2; const yy = y + dy + 23 + lh * i + lh * .52;
+    l.forEach(p => { X.fillStyle = p[1] || COL.text; X.fillText(p[0], x, yy); x += X.measureText(p[0]).width; });
+  });
+  X.restore();
+}
+function sticker(label, x, y, color, s0) {   // s0 = seconds since the event
+  if (s0 > .7) return;
+  const k = eob(prog(s0, 0, .2)), a = 1 - prog(s0, .4, .7);
+  X.save(); X.globalAlpha *= a; X.translate(x, y); X.rotate(-.12); X.scale(k, k);
+  font('IT', 40); const w = X.measureText(label).width + 40;
+  rr(-w / 2, -34, w, 68, 14); X.fillStyle = color; X.fill();
+  X.fillStyle = '#0A0C11'; X.textAlign = 'center'; X.textBaseline = 'middle'; X.fillText(label, 0, 3); X.restore();
+}
+
+// ---------------------------------------------------------------- background
+function bg() {
+  X.fillStyle = COL.bg; X.fillRect(0, 0, W, H);
+  const g = X.createRadialGradient(W / 2, H * .45, 40, W / 2, H * .45, 1150);
+  g.addColorStop(0, '#151A27'); g.addColorStop(1, COL.bg); X.fillStyle = g; X.fillRect(0, 0, W, H);
+  X.fillStyle = 'rgba(255,255,255,0.045)';
+  for (let y = 30; y < H; y += 60) for (let x = 30; x < W; x += 60) X.fillRect(x - 1.5, y - 1.5, 3, 3);
+}
+
+// ---------------------------------------------------------------- keycaps
+function key3d(x, y, s, color, legend, p = 0) {
+  const dy = p * s * .08;
+  X.save();
+  X.fillStyle = 'rgba(0,0,0,0.5)'; X.beginPath(); X.ellipse(x, y + s * .55, s * .56, s * .1, 0, 0, 7); X.fill();
+  if (p > 0) glow(x, y + s * .4, s * .9, color, .45 * p);
+  rr(x - s * .46, y + s * .3, s * .92, s * .26, s * .06); X.fillStyle = '#20252F'; X.fill();   // switch peeking out
+  const g = X.createLinearGradient(0, y - s / 2 + dy, 0, y + s / 2 + dy);
+  g.addColorStop(0, shade(color, -.1)); g.addColorStop(1, shade(color, -.58));
+  rr(x - s / 2, y - s / 2 + dy, s, s, s * .14); X.fillStyle = g; X.fill();
+  const tw = s * .74, th = s * .64, tx = x - tw / 2, ty = y - s / 2 + s * .07 + dy;
+  const g2 = X.createLinearGradient(0, ty, 0, ty + th);
+  g2.addColorStop(0, shade(color, .4)); g2.addColorStop(1, shade(color, .08));
+  rr(tx, ty, tw, th, s * .1); X.fillStyle = g2; X.fill();
+  text(legend, x, ty + th / 2 + 2, { f: 'IT', size: s * .19, color: 'rgba(10,12,17,0.78)', base: 'middle' });
+  X.restore();
+}
+function keycapSide(cx, y, color, legend) {
+  const g = X.createLinearGradient(0, y, 0, y + 110);
+  g.addColorStop(0, shade(color, .3)); g.addColorStop(1, shade(color, -.35));
+  X.beginPath(); X.moveTo(cx - 126, y); X.quadraticCurveTo(cx, y + 20, cx + 126, y);
+  X.lineTo(cx + 168, y + 110); X.lineTo(cx - 168, y + 110); X.closePath();
+  X.lineJoin = 'round'; X.lineWidth = 14; X.strokeStyle = g; X.fillStyle = g; X.stroke(); X.fill();
+  text(legend, cx, y + 82, { f: 'IT', size: 50, color: 'rgba(10,12,17,0.55)' });
+}
+
+// ---------------------------------------------------------------- switch cross-section
+const PX = 35;                       // pixels per mm of travel (4 mm = 140 px)
+function spring(cx, a, b) {
+  X.beginPath(); const n = 16;
+  for (let i = 0; i <= n; i++) { const x = cx + (i % 2 ? 64 : -64), y = lerp(a, b, i / n); i ? X.lineTo(x, y) : X.moveTo(x, y); }
+  X.strokeStyle = '#B9C1CF'; X.lineWidth = 6; X.lineJoin = 'round'; X.stroke();
+}
+function leader(x0, y0, x1, label, color) {
+  X.strokeStyle = rgba(color, .6); X.lineWidth = 2; X.beginPath(); X.moveTo(x0, y0); X.lineTo(x1, y0); X.stroke();
+  X.fillStyle = color; X.beginPath(); X.arc(x0, y0, 5, 0, 7); X.fill();
+  text(label, x1 + 10, y0 + 8, { f: 'M', size: 22, color, align: 'left' });
+}
+function field(cx, cy, inten, lt, clipY0, clipY1) {
+  X.save(); X.beginPath(); X.rect(cx - 197, clipY0, 394, clipY1 - clipY0); X.clip();
+  [70, 105, 145, 190, 240].forEach((R, i) => {
+    for (const sg of [-1, 1]) {
+      X.beginPath();
+      for (let k = 0; k <= 64; k++) {
+        const th = .08 + k / 64 * (Math.PI - .16), r = R * Math.sin(th) ** 2;
+        const x = cx + sg * r * Math.sin(th), y = cy + r * Math.cos(th);
+        k ? X.lineTo(x, y) : X.moveTo(x, y);
+      }
+      X.strokeStyle = rgba(COL.hall, (.2 + .55 * inten) * (1 - i * .13)); X.lineWidth = 3;
+      X.setLineDash([14, 12]); X.lineDashOffset = -lt * 60 * sg; X.stroke();
+    }
+  });
+  X.setLineDash([]); X.restore();
+}
+function drawSwitch(kind, cx, Y0, d, o = {}) {
+  const off = d * PX, acc = kind === 'mech' ? COL.mech : COL.hall, pcbY = Y0 + 570;
+  X.save();
+  // PCB with a trace to a status LED
+  rr(cx - 310, pcbY, 620, 44, 10); X.fillStyle = COL.pcb; X.fill();
+  X.strokeStyle = o.on ? acc : 'rgba(255,255,255,0.16)'; X.lineWidth = 5; X.lineCap = 'round';
+  X.beginPath(); X.moveTo(cx + (kind === 'mech' ? 128 : 30), pcbY + 22); X.lineTo(cx + 252, pcbY + 22); X.stroke();
+  if (o.on) glow(cx + 272, pcbY + 22, 80, acc, .8);
+  X.beginPath(); X.arc(cx + 272, pcbY + 22, 11, 0, 7); X.fillStyle = o.on ? '#fff' : '#2B3A33'; X.fill();
+  text('PCB', cx - 285, pcbY + 30, { f: 'M', size: 22, color: 'rgba(255,255,255,0.5)', align: 'left' });
+  // housing body
+  rr(cx - 200, Y0 + 300, 400, 262, 16); X.fillStyle = 'rgba(54,62,80,0.5)'; X.fill();
+  X.strokeStyle = 'rgba(190,200,225,0.45)'; X.lineWidth = 3; X.stroke();
+  const inten = d / 4, magY = Y0 + 357 + off;
+  if (kind === 'hall') {
+    field(cx, magY, inten, o.lt || 0, Y0 + 302, Y0 + 616);
+    const sy = Y0 + 546;
+    glow(cx, sy + 11, 80 + 70 * inten, COL.hall, .2 + .5 * inten + .6 * (o.flash || 0));
+    rr(cx - 40, sy, 80, 24, 4); X.fillStyle = '#0D0F14'; X.fill(); X.strokeStyle = '#7A8294'; X.lineWidth = 2; X.stroke();
+    X.fillStyle = '#9AA2B2'; for (let i = -1; i <= 1; i++) X.fillRect(cx + i * 22 - 3, sy + 24, 6, 8);
+  } else {
+    const c = ss(1.7, 2.0, d);
+    X.lineCap = 'round'; X.lineWidth = 8;
+    X.strokeStyle = COL.copper; X.beginPath(); X.moveTo(cx + 132, Y0 + 365); X.lineTo(cx + 132, Y0 + 600); X.stroke();
+    X.strokeStyle = shade(COL.copper, -.1); X.beginPath(); X.moveTo(cx + 100, Y0 + 600); X.lineTo(cx + 100, Y0 + 470);
+    X.lineTo(lerp(cx + 92, cx + 124, c), Y0 + 372); X.stroke();
+    if (c > .98) {
+      const f = o.flash || 0;
+      glow(cx + 128, Y0 + 372, 70 + 90 * f, COL.mech, .55 + .45 * f);
+      if (f > 0) {
+        X.strokeStyle = rgba('#FFE2C4', f); X.lineWidth = 4;
+        for (let i = 0; i < 8; i++) {
+          const a = i / 8 * Math.PI * 2 + .3, r0 = 18 + (1 - f) * 30, r1 = r0 + 26 * f;
+          X.beginPath(); X.moveTo(cx + 128 + Math.cos(a) * r0, Y0 + 372 + Math.sin(a) * r0);
+          X.lineTo(cx + 128 + Math.cos(a) * r1, Y0 + 372 + Math.sin(a) * r1); X.stroke();
+        }
+      }
+    }
+  }
+  // stem, spring seat, and the part that matters (leg or magnet)
+  const stemCol = kind === 'mech' ? '#E8553D' : '#2FA9D8';
+  rr(cx - 28, Y0 + 110 + off, 56, 270, 6); X.fillStyle = stemCol; X.fill();
+  rr(cx - 66, Y0 + 314 + off, 132, 16, 6); X.fill();
+  if (kind === 'mech') { rr(cx + 24, Y0 + 336 + off, 66, 24, 6); X.fill(); }
+  spring(cx, Y0 + 330 + off, Y0 + 556);
+  if (kind === 'hall') {
+    const m0 = Y0 + 334 + off;
+    rr(cx - 38, m0, 76, 24, [7, 7, 0, 0]); X.fillStyle = COL.N; X.fill();
+    rr(cx - 38, m0 + 24, 76, 24, [0, 0, 7, 7]); X.fillStyle = COL.S; X.fill();
+    text('N', cx, m0 + 19, { f: 'I7', size: 19 }); text('S', cx, m0 + 43, { f: 'I7', size: 19 });
+  }
+  // housing top shell
+  X.fillStyle = 'rgba(74,84,106,0.95)'; X.strokeStyle = 'rgba(190,200,225,0.5)'; X.lineWidth = 3;
+  rr(cx - 190, Y0 + 250, 158, 58, 10); X.fill(); X.stroke();
+  rr(cx + 32, Y0 + 250, 158, 58, 10); X.fill(); X.stroke();
+  // labels on the right
+  if (kind === 'hall') { leader(cx + 40, magY, cx + 222, 'MAGNET', COL.N); leader(cx + 44, Y0 + 558, cx + 222, 'SENSOR', COL.hall); }
+  else leader(cx + 136, Y0 + 430, cx + 222, 'CONTACTS', COL.copper);
+  keycapSide(cx, Y0 + off, acc, 'W');
+  X.restore();
+}
+function ruler(x, y0, y1, d, acts, color) {
+  const py = v => lerp(y0, y1, v / 4);
+  X.save(); X.strokeStyle = COL.dim; X.lineWidth = 3;
+  X.beginPath(); X.moveTo(x, y0); X.lineTo(x, y1); X.stroke();
+  for (let v = 0; v <= 4.001; v += .5) {
+    const yy = py(v), major = Math.abs(v - Math.round(v)) < 1e-6;
+    X.beginPath(); X.moveTo(x, yy); X.lineTo(x + (major ? 26 : 14), yy); X.stroke();
+    if (major) text(`${v}`, x - 16, yy + 10, { f: 'M', size: 30, color: COL.muted, align: 'right' });
+  }
+  text('mm', x - 16, y1 + 48, { f: 'M', size: 24, color: COL.muted, align: 'right' });
+  X.fillStyle = color; X.fillRect(x - 4, y0, 8, py(d) - y0);
+  acts.forEach(a => {
+    const yy = py(a.v); X.strokeStyle = a.color; X.lineWidth = 3; X.setLineDash(a.dash ? [9, 7] : []);
+    X.beginPath(); X.moveTo(x - 8, yy); X.lineTo(x + 150, yy); X.stroke(); X.setLineDash([]);
+    text(a.label, x + 8, yy - 12, { f: 'M', size: 22, color: a.color, align: 'left' });
+  });
+  const yy = py(d); X.fillStyle = COL.text;
+  X.beginPath(); X.moveTo(x + 30, yy); X.lineTo(x + 52, yy - 12); X.lineTo(x + 52, yy + 12); X.closePath(); X.fill();
+  X.restore();
+}
+
+// ---------------------------------------------------------------- scenes
+const EVENTS = [];
+const ev = (t, type, gain = 1) => EVENTS.push({ t: +t.toFixed(3), type, gain });
+const Y0 = 560, CX = 600, RX = 150, RY0 = 620, RY1 = 1080;
+
+// 1. hook
+function hook(lt) {
+  glow(W / 2, 950, 650, '#2A3550', .45);
+  popLine([['HALL', COL.hall], ['EFFECT', COL.hall]], W / 2, 430, 124, 'IT', .05, lt);
+  popLine([['vs', COL.muted], ['MECHANICAL', COL.mech]], W / 2, 555, 96, 'IT', .3, lt);
+  const kl = prog(lt, .35, .85), kr = prog(lt, .5, 1.0);
+  if (kl > 0) key3d(320, lerp(-250, 950, eob(kl)), 290, COL.hall, 'HALL', pulse(lt, 1.85) + pulse(lt, 2.6, .2));
+  if (kr > 0) key3d(760, lerp(-250, 950, eob(kr)), 290, COL.mech, 'MECH', pulse(lt, 2.2) + pulse(lt, 2.8, .2));
+  const kv = prog(lt, .95, 1.25);
+  if (kv > 0) {
+    glow(540, 950, 260, '#FFFFFF', .35 * (1 - prog(lt, 1.0, 1.6)));
+    X.save(); X.translate(540, 950); X.scale(eob(kv), eob(kv));
+    X.beginPath(); X.arc(0, 0, 66, 0, 7); X.fillStyle = COL.text; X.fill();
+    text('VS', 0, 4, { f: 'IT', size: 54, color: COL.bg, base: 'middle' }); X.restore();
+  }
+  popLine([["What's", COL.text], ['actually', COL.text], ['different?', COL.text]], W / 2, 1300, 66, 'I7', 1.25, lt);
+}
+hook.dur = 3.3;
+hook.events = a => { ev(a + .62, 'drop'); ev(a + .77, 'drop'); ev(a + .97, 'boom'); ev(a + 1.9, 'hall'); ev(a + 2.25, 'click'); ev(a + 2.63, 'hall', .7); ev(a + 2.83, 'click', .7); };
+
+// 2. mechanical
+const mechD = track([[0, 0], [.9, 0], [2.7, 4], [3.2, 4], [3.8, 0], [4.3, 0], [4.55, 4], [4.8, 0], [5.15, 0], [5.4, 4], [5.65, 0]]);
+const mechClicks = crossings(lt => mechD(lt) - 2, 0, 7);
+const mechBottoms = crossings(lt => mechD(lt) - 3.97, 0, 7);
+function mech(lt) {
+  const d = mechD(lt), s = since(lt, mechClicks), flash = 1 - prog(s, 0, .45);
+  glow(CX, 880, 560, COL.mech, .09 + .1 * flash);
+  tag('MECHANICAL', W / 2, 290, COL.mech, prog(lt, .05, .45));
+  popLine([['Metal', COL.text], ['contacts', COL.text], ['touch', COL.mech]], W / 2, 410, 74, 'IT', .15, lt);
+  const k = eo(prog(lt, .2, .7));
+  X.save(); X.globalAlpha = k; X.translate(0, (1 - k) * 50);
+  ruler(RX, RY0, RY1, d, [{ v: 2, label: 'ACTUATES 2.0', color: COL.mech }], COL.mech);
+  drawSwitch('mech', CX, Y0, d, { on: d >= 1.95, flash, lt });
+  text(`${d.toFixed(2)} mm`, RX - 50, 1190, { f: 'M', size: 34, color: COL.text, align: 'left' });
+  X.restore();
+  sticker('CLICK!', 860, 650, COL.mech, s);
+  caption([[['Press ~2 mm and two metal']], [['leaves ', ], ['snap together', COL.mech], ['.']]], 1240, win(lt, 1.0, 3.95));
+  caption([[['One ', ], ['fixed', COL.mech], [' actuation point,']], [['the same on every key.']]], 1240, win(lt, 4.0, 7.2));
+}
+mech.dur = 6.8;
+mech.events = a => { mechClicks.forEach(c => ev(a + c, 'click')); mechBottoms.forEach(c => ev(a + c, 'clack', .6)); };
+
+// 3. hall effect
+const hallD = track([[0, 0], [.9, 0], [2.7, 4], [3.2, 4], [3.8, 0], [4.8, 0], [5.05, .55], [5.3, 0], [6.15, 0], [6.45, 4], [6.75, 0]]);
+const hallA = track([[0, 2], [4.1, 2], [4.6, .1], [5.5, .1], [5.95, 3.6]]);
+const hallHits = crossings(lt => hallD(lt) - hallA(lt), 0, 7.2);
+function hall(lt) {
+  const d = hallD(lt), a = hallA(lt), s = since(lt, hallHits), flash = 1 - prog(s, 0, .5);
+  glow(CX, 880, 560, COL.hall, .08 + .1 * flash);
+  tag('HALL EFFECT', W / 2, 290, COL.hall, prog(lt, .05, .45));
+  popLine([['No', COL.text], ['contact.', COL.text], ['Magnets.', COL.hall]], W / 2, 410, 74, 'IT', .15, lt);
+  const k = eo(prog(lt, .2, .7));
+  X.save(); X.globalAlpha = k; X.translate(0, (1 - k) * 50);
+  ruler(RX, RY0, RY1, d, [{ v: a, label: `ACTUATES ${a.toFixed(1)}`, color: COL.hall }], COL.hall);
+  drawSwitch('hall', CX, Y0, d, { on: d >= a, flash, lt });
+  text(`${d.toFixed(2)} mm`, RX - 50, 1190, { f: 'M', size: 34, color: COL.text, align: 'left' });
+  X.restore();
+  sticker('ACTUATED', 860, 650, COL.hall, s);
+  caption([[['A magnet rides in the stem.']], [['A sensor ', ], ['measures', COL.hall], [' how close.']]], 1240, win(lt, 1.0, 3.95));
+  caption([[['So you choose where it fires:']], [['anywhere from ', ], ['0.1 to 4.0 mm', COL.hall]]], 1240, win(lt, 4.0, 7.4));
+}
+hall.dur = 7.0;
+hall.events = a => { hallHits.forEach(c => ev(a + c, 'hall')); };
+
+// 4. rapid trigger
+const rtD = track([[0, 0], [.1, 3.4], [.2, 2.6], [.3, 3.4], [.4, 2.6], [.5, 3.4], [.6, 2.6], [.7, 3.4], [.86, 0], [1, 0]]);
+const RN = 600, RTS = [...Array(RN + 1)].map((_, i) => rtD(i / RN));
+function segments(kind) {
+  const segs = []; let on = false, ext = 0, start = 0;
+  RTS.forEach((d, i) => {
+    const was = on;
+    if (kind === 'mech') { if (!on && d >= 2) on = true; else if (on && d < 1.8) on = false; }
+    else if (on) { ext = Math.max(ext, d); if (d <= ext - .15) { on = false; ext = d; } }
+    else { ext = Math.min(ext, d); if (d >= .4 && d >= ext + .15) { on = true; ext = d; } }
+    if (on && !was) start = i;
+    if (!on && was) segs.push([start, i]);
+  });
+  if (on) segs.push([start, RN]);
+  return segs;
+}
+const SEG = { mech: segments('mech'), hall: segments('hall') };
+const RT0 = .9, RT1 = 5.3, uOf = lt => prog(lt, RT0, RT1);
+function panel(y, kind, u, k) {
+  if (k <= 0) return;
+  const color = kind === 'mech' ? COL.mech : COL.hall, segs = SEG[kind], ui = Math.floor(u * RN);
+  X.save(); X.globalAlpha *= k; X.translate((1 - eo(k)) * (kind === 'mech' ? -80 : 80), 0);
+  rr(90, y, 900, 400, 28); X.fillStyle = 'rgba(19,23,32,0.9)'; X.fill(); X.strokeStyle = rgba(color, .4); X.lineWidth = 2.5; X.stroke();
+  X.beginPath(); X.arc(140, y + 50, 10, 0, 7); X.fillStyle = color; X.fill();
+  text(kind === 'mech' ? 'MECHANICAL' : 'HALL EFFECT', 164, y + 61, { f: 'I7', size: 32, color, align: 'left', ls: '2px' });
+  const n = segs.filter(s => s[0] <= ui).length;
+  text('INPUTS', 860, y + 59, { f: 'M', size: 24, color: COL.muted, align: 'right' });
+  text(`${n}`, 940, y + 64, { f: 'IT', size: 52, color: n ? color : COL.dim, align: 'right' });
+  const x0 = 140, x1 = 940, py0 = y + 100, py1 = y + 290, py = d => lerp(py0, py1, d / 4);
+  X.strokeStyle = 'rgba(255,255,255,0.08)'; X.lineWidth = 2;
+  for (const v of [0, 4]) { X.beginPath(); X.moveTo(x0, py(v)); X.lineTo(x1, py(v)); X.stroke(); }
+  text('top', x0 - 8, py(0) + 7, { f: 'M', size: 18, color: COL.muted, align: 'right' });
+  text('bottom', x0 - 8, py(4) + 7, { f: 'M', size: 18, color: COL.muted, align: 'right', alpha: 0 });
+  if (kind === 'mech') {
+    X.strokeStyle = rgba(color, .8); X.lineWidth = 2.5;
+    X.beginPath(); X.moveTo(x0, py(2)); X.lineTo(x1, py(2)); X.stroke();
+    X.setLineDash([8, 7]); X.beginPath(); X.moveTo(x0, py(1.8)); X.lineTo(x1, py(1.8)); X.stroke(); X.setLineDash([]);
+    text('- - reset line: must rise above it to fire again', x1, y + 92, { f: 'M', size: 20, color, align: 'right' });
+  } else {
+    text('re-fires on every 0.15 mm change of direction', x1, y + 92, { f: 'M', size: 20, color, align: 'right' });
+  }
+  // depth curve so far
+  X.beginPath();
+  for (let i = 0; i <= ui; i++) { const xx = lerp(x0, x1, i / RN), yy = py(RTS[i]); i ? X.lineTo(xx, yy) : X.moveTo(xx, yy); }
+  X.strokeStyle = COL.text; X.lineWidth = 5; X.lineJoin = 'round'; X.stroke();
+  const hx = lerp(x0, x1, ui / RN), hy = py(RTS[ui]);
+  X.beginPath(); X.arc(hx, hy, 10, 0, 7); X.fillStyle = COL.text; X.fill();
+  // key state track
+  const ty = y + 322; rr(x0, ty, x1 - x0, 44, 10); X.fillStyle = 'rgba(255,255,255,0.05)'; X.fill();
+  text('KEY', x0 - 8, ty + 29, { f: 'M', size: 18, color: COL.muted, align: 'right' });
+  segs.forEach(([a, b]) => {
+    if (a > ui) return;
+    const xa = lerp(x0, x1, a / RN), xb = lerp(x0, x1, Math.min(b, ui) / RN);
+    rr(xa + 2, ty + 4, Math.max(4, xb - xa - 4), 36, 8); X.fillStyle = color; X.fill();
+    if (xb - xa > 70) text(kind === 'mech' ? 'HELD DOWN' : 'ON', (xa + xb) / 2, ty + 31, { f: 'I7', size: 22, color: COL.bg });
+  });
+  X.restore();
+}
+function rt(lt) {
+  const u = uOf(lt);
+  tag('RAPID TRIGGER', W / 2, 290, COL.hall, prog(lt, .05, .45));
+  popLine([['Same', COL.text], ['taps.', COL.text], ['4x', COL.hall], ['the', COL.hall], ['inputs.', COL.hall]], W / 2, 410, 74, 'IT', .15, lt);
+  panel(470, 'mech', u, prog(lt, .3, .7));
+  panel(900, 'hall', u, prog(lt, .45, .85));
+  caption([[['Mechanical waits for the reset.']], [['Hall resets ', ], ['the moment you lift', COL.hall], ['.']]], 1340, win(lt, 2.2, 6.9), 44);
+}
+rt.dur = 6.6;
+rt.events = a => {
+  SEG.mech.forEach(([s]) => ev(a + RT0 + s / RN * (RT1 - RT0), 'click'));
+  SEG.hall.forEach(([s]) => ev(a + RT0 + s / RN * (RT1 - RT0), 'hall', .9));
+};
+
+// 5. scorecard
+const ROWS = [
+  ['Actuation', ['Fixed', '~2 mm'], ['Adjustable', '0.1 – 4 mm'], 'hall'],
+  ['Rapid trigger', ['No'], ['Yes'], 'hall'],
+  ['Contacts', ['Metal,', 'can wear'], ['None,', 'magnetic'], 'hall'],
+  ['Feel & sound', ['Huge', 'variety'], ['Mostly', 'linear'], 'mech'],
+  ['Price', ['Cheaper'], ['Pricier'], 'mech'],
+];
+const MXC = 580, HXC = 830, ROW0 = 470, RH = 158;
+function score(lt) {
+  tag('HEAD TO HEAD', W / 2, 290, COL.text, prog(lt, .05, .45));
+  const hk = prog(lt, .2, .5);
+  text('MECH', MXC, 410, { f: 'IT', size: 44, color: COL.mech, alpha: hk });
+  text('HALL', HXC, 410, { f: 'IT', size: 44, color: COL.hall, alpha: hk });
+  ROWS.forEach(([label, m, h, win_], i) => {
+    const t0 = .55 + i * .5, k = prog(lt, t0, t0 + .35);
+    if (k <= 0) return;
+    const y = ROW0 + i * RH;
+    X.save(); X.globalAlpha = clamp(k * 1.5); X.translate((1 - eo(k)) * 160, 0);
+    X.strokeStyle = 'rgba(255,255,255,0.08)'; X.lineWidth = 2; X.beginPath(); X.moveTo(100, y + RH); X.lineTo(980, y + RH); X.stroke();
+    text(label, 100, y + RH / 2 + 13, { f: 'I7', size: 38, align: 'left' });
+    const wk = prog(lt, t0 + .25, t0 + .5);
+    [[MXC, m, 'mech'], [HXC, h, 'hall']].forEach(([cx, lines, kind]) => {
+      const color = COL[kind], won = kind === win_;
+      if (won && wk > 0) {
+        X.save(); X.globalAlpha *= wk; rr(cx - 118, y + 14, 236, RH - 28, 20);
+        X.fillStyle = rgba(color, .15); X.fill(); X.strokeStyle = rgba(color, .8); X.lineWidth = 2.5; X.stroke();
+        X.beginPath(); X.arc(cx + 112, y + 18, 17 * eob(wk), 0, 7); X.fillStyle = color; X.fill();
+        X.strokeStyle = COL.bg; X.lineWidth = 4; X.beginPath(); X.moveTo(cx + 104, y + 18); X.lineTo(cx + 110, y + 25); X.lineTo(cx + 121, y + 11); X.stroke();
+        X.restore();
+      }
+      const lh = 38, top = y + RH / 2 - (lines.length - 1) * lh / 2 + 11;
+      lines.forEach((s, j) => text(s, cx, top + j * lh, { f: 'I6', size: 32, color: won && wk > .5 ? COL.text : COL.muted }));
+    });
+    X.restore();
+  });
+}
+score.dur = 5.0;
+score.events = a => { ROWS.forEach((r, i) => { ev(a + .55 + i * .5, 'pop', .8); ev(a + .8 + i * .5, 'tick', .7); }); };
+
+// 6. outro
+function card(y, color, legend, l1, l2, k, p) {
+  if (k <= 0) return;
+  X.save(); X.globalAlpha = clamp(k * 1.5); X.translate((1 - eo(k)) * 200, 0);
+  rr(100, y, 880, 270, 30); X.fillStyle = rgba(color, .09); X.fill(); X.strokeStyle = rgba(color, .6); X.lineWidth = 2.5; X.stroke();
+  key3d(240, y + 128, 170, color, legend, p);
+  text(l1, 370, y + 120, { f: 'I7', size: 44, align: 'left' });
+  text(l2, 370, y + 176, { f: 'I6', size: 32, color, align: 'left' });
+  X.restore();
+}
+function outro(lt) {
+  popLine([['So', COL.text], ['which', COL.text], ['one?', COL.text]], W / 2, 410, 96, 'IT', .05, lt);
+  card(500, COL.hall, 'HALL', 'Competitive gaming', 'speed + rapid trigger', prog(lt, .35, .75), pulse(lt, 1.4));
+  card(820, COL.mech, 'MECH', 'Typing & budget', 'feel, sound, price', prog(lt, .7, 1.1), pulse(lt, 1.8));
+  popLine([['Which', COL.text], ['team', COL.text], ['are', COL.text], ['you?', COL.text]], W / 2, 1270, 68, 'IT', 2.1, lt);
+  text('tell me in the comments', W / 2, 1345, { f: 'M', size: 30, color: COL.muted, alpha: prog(lt, 2.5, 2.9) });
+}
+outro.dur = 4.0;
+outro.events = a => { ev(a + .35, 'pop'); ev(a + .7, 'pop'); ev(a + 1.43, 'hall'); ev(a + 1.83, 'click'); ev(a + 2.1, 'boom', .5); };
+
+// ---------------------------------------------------------------- timeline
+const SC = []; let acc = 0;
+for (const f of [hook, mech, hall, rt, score, outro]) { SC.push({ a: acc, b: acc + f.dur, draw: f }); acc += f.dur; }
+const TOTAL = acc, TR = .18;
+SC.forEach((s, i) => { s.draw.events(s.a); if (i) ev(s.a - .2, 'whoosh'); });
+EVENTS.sort((p, q) => p.t - q.t);
+
+function speedLines(t) {
+  SC.forEach(s => {
+    const dd = Math.abs(t - s.b); if (s.b >= TOTAL || dd >= TR) return;
+    const k = 1 - dd / TR; X.save(); X.globalAlpha = .28 * k; X.fillStyle = '#fff';
+    for (let i = 0; i < 16; i++) {
+      const y = (i * 7919) % H, len = 220 + (i * 331) % 420, x = ((i * 571 - t * 9000) % (W + 800) + W + 800) % (W + 800) - 400;
+      X.fillRect(x, y, len, 3 + (i % 3));
+    }
+    X.restore();
+  });
+}
+function render(t) {
+  X.setTransform(1, 0, 0, 1, 0, 0); X.globalAlpha = 1; bg();
+  for (const s of SC) {
+    if (t < s.a - TR || t > s.b + TR) continue;
+    let x = 0;
+    if (s.a > 0 && t < s.a + TR) x = W * (1 - eio(prog(t, s.a - TR, s.a + TR)));
+    if (s.b < TOTAL && t > s.b - TR) x -= W * eio(prog(t, s.b - TR, s.b + TR));
+    X.save(); X.translate(x, 0); s.draw(t - s.a); X.restore();
+  }
+  speedLines(t);
+}
+window.render = render; window.TOTAL = TOTAL; window.EVENTS = EVENTS;
+</script>
+</body></html>
