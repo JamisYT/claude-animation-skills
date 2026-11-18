@@ -1,0 +1,519 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<style>
+@font-face{font-family:'IT';src:url(/kit/fonts/inter-tight-latin-800-normal.woff2) format('woff2')}
+@font-face{font-family:'I7';src:url(/kit/fonts/inter-700-normal.woff2) format('woff2')}
+@font-face{font-family:'I6';src:url(/kit/fonts/inter-600-normal.woff2) format('woff2')}
+html,body{margin:0;background:#000;width:1080px;height:1920px;overflow:hidden}
+canvas{display:block;position:absolute;left:0;top:0}
+</style>
+<script type="importmap">{"imports":{"three":"/kit/node_modules/three/build/three.module.js"}}</script>
+</head>
+<body>
+<canvas id="gl" width="1080" height="1920" style="visibility:hidden"></canvas>
+<canvas id="c" width="1080" height="1920"></canvas>
+<script type="module">
+// Brainrot battle: a log with a bat vs a shark in sneakers. No voice; music, sfx and big comic text. render(t) draws frame t.
+import * as THREE from 'three';
+const W = 1080, H = 1920;
+await Promise.all(['IT', 'I7', 'I6'].map(f => document.fonts.load(`40px ${f}`)));
+
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const prog = (t, a, b) => clamp((t - a) / (b - a));
+const eo = t => 1 - Math.pow(1 - t, 3);
+const ei = t => t * t * t;
+const eio = t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+const eob = t => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); };
+const pulse = (t, t0, d) => Math.sin(Math.PI * prog(t, t0, t0 + d));
+function rand(i) { const x = Math.sin(i * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); }
+function keys(list) {           // [[t, value or array], ...] eased between keys
+  return t => {
+    if (t <= list[0][0]) return list[0][1];
+    for (let i = 1; i < list.length; i++) if (t <= list[i][0]) {
+      const [t0, a] = list[i - 1], [t1, b] = list[i], k = eio(prog(t, t0, t1));
+      return Array.isArray(a) ? a.map((v, j) => lerp(v, b[j], k)) : lerp(a, b, k);
+    }
+    return list[list.length - 1][1];
+  };
+}
+
+// ------------------------------------------------------------------ timeline (seconds)
+const T = {
+  tungLand: .55, sharkLand: .95, vs: 1.0, horn: 2.5,
+  r1: 3.4, knocks: [5.0, 5.6, 6.2], smash: 7.0, sharkDown: 8.2,
+  r2: 9.4, taps: [10.9, 11.2, 11.5, 11.8], spin: 12.0, dash: 12.6, hit: 13.1, stuck: 14.3, popOut: 15.15,
+  fin: 15.4, crouch: 16.6, charge: 17.0, slow0: 17.6, slow1: 18.4, boom: 18.6, ko: 19.7,
+  who: 21.6, comment: 23.0, sub: 24.6, end: 28.0,
+};
+const TOTAL = T.end;
+const EVENTS = []; const ev = (t, type, gain = 1) => EVENTS.push({ t: +t.toFixed(3), type, gain });
+
+// ------------------------------------------------------------------ renderer + world
+const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gl'), antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(W, H, false); renderer.setPixelRatio(1);
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+const scene = new THREE.Scene();
+const cam = new THREE.PerspectiveCamera(50, W / H, .1, 300);
+scene.add(new THREE.HemisphereLight(0xffffff, 0xffc0e0, 2.0));
+const sun = new THREE.DirectionalLight(0xffffff, 2.4); sun.position.set(6, 20, 14); sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048); Object.assign(sun.shadow.camera, { left: -14, right: 14, top: 14, bottom: -14, near: 1, far: 60 });
+sun.shadow.bias = -.0008; scene.add(sun);
+const std = (color, o = {}) => new THREE.MeshStandardMaterial({ color, roughness: .5, ...o });
+function canvasTex(w, h, draw) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h; draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
+}
+function mesh(geo, mat, x = 0, y = 0, z = 0, parent = scene) { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = true; parent.add(m); return m; }
+
+// sunburst background, one texture per section
+const rays = (a, b) => canvasTex(1024, 1024, (g) => {
+  g.fillStyle = a; g.fillRect(0, 0, 1024, 1024);
+  for (let i = 0; i < 24; i += 2) { g.beginPath(); g.moveTo(512, 512); g.arc(512, 512, 900, i / 24 * Math.PI * 2, (i + 1) / 24 * Math.PI * 2); g.closePath(); g.fillStyle = b; g.fill(); }
+  const r = g.createRadialGradient(512, 512, 0, 512, 512, 520); r.addColorStop(0, 'rgba(255,255,255,0.55)'); r.addColorStop(1, 'rgba(255,255,255,0)'); g.fillStyle = r; g.fillRect(0, 0, 1024, 1024);
+});
+const RAYS = { intro: rays('#FFD93D', '#FFB000'), r1: rays('#FF9F1C', '#FF6B00'), r2: rays('#4CC9F0', '#3A86FF'), fin: rays('#FF2E63', '#B5179E'),
+  who: canvasTex(1024, 1024, (g) => { const cs = ['#FF595E', '#FFCA3A', '#8AC926', '#1982C4', '#6A4C93', '#FF8FAB']; for (let i = 0; i < 24; i++) { g.beginPath(); g.moveTo(512, 512); g.arc(512, 512, 900, i / 24 * Math.PI * 2, (i + 1) / 24 * Math.PI * 2); g.closePath(); g.fillStyle = cs[i % 6]; g.fill(); } }) };
+const bgMat = new THREE.MeshBasicMaterial({ map: RAYS.intro });
+const bg = new THREE.Mesh(new THREE.PlaneGeometry(140, 140), bgMat); bg.position.set(0, 6, -40); scene.add(bg);
+
+// the stage
+{
+  const top = canvasTex(1024, 1024, (g) => {
+    const cs = ['#FF8FC7', '#FFD6EC']; const n = 16, s = 1024 / n;
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) { g.fillStyle = cs[(i + j) % 2]; g.fillRect(i * s, j * s, s, s); }
+  });
+  mesh(new THREE.CylinderGeometry(10, 10.6, 1.4, 64), [std(0xFF4FA3), std(0xffffff, { map: top }), std(0xFF4FA3)], 0, -.7, 0);
+  const rim = mesh(new THREE.TorusGeometry(10.05, .28, 12, 80), std(0xFFD93D, { emissive: 0x664400 }), 0, 0, 0); rim.rotation.x = Math.PI / 2;
+}
+// balloons
+const balloons = [...Array(8)].map((_, i) => {
+  const c = [0xFF595E, 0xFFCA3A, 0x8AC926, 0x1982C4, 0x6A4C93, 0xFF8FAB][i % 6];
+  const g = new THREE.Group(); scene.add(g);
+  const b = mesh(new THREE.SphereGeometry(1, 20, 16), std(c, { roughness: .25 }), 0, 0, 0, g); b.scale.set(.9, 1.1, .9);
+  mesh(new THREE.CylinderGeometry(.02, .02, 3, 4), std(0xffffff), 0, -2.6, 0, g);
+  g.userData = { x: (i % 2 ? 1 : -1) * (7 + rand(i) * 6), y: 6 + rand(i + 1) * 8, z: -8 - rand(i + 2) * 12 };
+  return g;
+});
+
+// ------------------------------------------------------------------ Tung Tung Tung Sahur: a log with a bat
+function logFace(kind) {
+  return canvasTex(512, 300, (g) => {
+    g.fillStyle = '#C98A4B'; g.fillRect(0, 0, 512, 300);
+    g.strokeStyle = 'rgba(110,60,20,0.35)'; g.lineWidth = 4;
+    for (let i = 0; i < 26; i++) { const x0 = rand(i) * 512; g.beginPath(); for (let y = 0; y <= 300; y += 20) g.lineTo(x0 + Math.sin(y * .03 + i) * 6, y); g.stroke(); }
+    g.fillStyle = 'rgba(110,60,20,0.5)'; g.beginPath(); g.ellipse(90, 230, 14, 20, 0, 0, 7); g.ellipse(420, 200, 12, 18, 0, 0, 7); g.fill();
+    const ink = '#2A1406', cx = 256;
+    const eye = (x, y, r, px = 0, py = 0) => { g.fillStyle = '#fff'; g.beginPath(); g.ellipse(x, y, r, r * 1.15, 0, 0, 7); g.fill(); g.lineWidth = 5; g.strokeStyle = ink; g.stroke(); g.fillStyle = ink; g.beginPath(); g.arc(x + px, y + py, r * .48, 0, 7); g.fill(); g.fillStyle = '#fff'; g.beginPath(); g.arc(x + px - r * .15, y + py - r * .18, r * .15, 0, 7); g.fill(); };
+    const ln = (pts, w = 9) => { g.strokeStyle = ink; g.lineWidth = w; g.lineCap = 'round'; g.lineJoin = 'round'; g.beginPath(); pts.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y)); g.stroke(); };
+    const grin = (y, w, h) => { g.fillStyle = '#5A1A10'; g.beginPath(); g.moveTo(cx - w, y); g.quadraticCurveTo(cx, y + h * 2, cx + w, y); g.closePath(); g.fill();
+      g.fillStyle = '#fff'; g.fillRect(cx - w * .7, y, w * 1.4, h * .38); g.lineWidth = 6; g.strokeStyle = ink; g.beginPath(); g.moveTo(cx - w, y); g.quadraticCurveTo(cx, y + h * 2, cx + w, y); g.closePath(); g.stroke(); };
+    if (kind === 'normal') { eye(cx - 42, 80, 30, 6, 2); eye(cx + 42, 80, 30, 6, 2); ln([[cx - 72, 36], [cx - 20, 42]]); ln([[cx + 20, 42], [cx + 72, 36]]); grin(140, 58, 34); }
+    if (kind === 'angry') { eye(cx - 42, 84, 30, 8, 4); eye(cx + 42, 84, 30, 8, 4); ln([[cx - 76, 34], [cx - 16, 56]], 13); ln([[cx + 16, 56], [cx + 76, 34]], 13); grin(140, 66, 30); }
+    if (kind === 'dizzy') {
+      for (const ex of [cx - 42, cx + 42]) { g.fillStyle = '#fff'; g.beginPath(); g.arc(ex, 82, 30, 0, 7); g.fill(); g.strokeStyle = ink; g.lineWidth = 5; g.beginPath(); for (let a = 0; a < 14; a += .2) g.lineTo(ex + Math.cos(a) * a * 2, 82 + Math.sin(a) * a * 2); g.stroke(); }
+      ln([[cx - 40, 160], [cx - 20, 148], [cx, 160], [cx + 20, 148], [cx + 40, 160]], 8);
+    }
+    if (kind === 'happy') { ln([[cx - 66, 92], [cx - 42, 66], [cx - 18, 92]], 11); ln([[cx + 18, 92], [cx + 42, 66], [cx + 66, 92]], 11); grin(128, 66, 42); }
+  });
+}
+const tungTex = { normal: logFace('normal'), angry: logFace('angry'), dizzy: logFace('dizzy'), happy: logFace('happy') };
+const tung = (() => {
+  const g = new THREE.Group(); scene.add(g);
+  const wood = std(0xC98A4B), dark = std(0x6B3A16);
+  const cap = std(0xffffff, { map: canvasTex(256, 256, (c) => { c.fillStyle = '#E3B778'; c.fillRect(0, 0, 256, 256); c.strokeStyle = '#B07A3E'; c.lineWidth = 6; for (let r = 18; r < 128; r += 18) { c.beginPath(); c.arc(128, 128, r, 0, 7); c.stroke(); } }) });
+  const faceMat = std(0xffffff, { map: tungTex.normal });
+  const body = mesh(new THREE.CylinderGeometry(1.1, 1.15, 4, 40, 1, false, Math.PI, Math.PI * 2), [faceMat, cap, cap], 0, 3.5, 0, g);
+  const limb = (x, y, len, mat) => { const p = new THREE.Group(); p.position.set(x, y, 0); g.add(p); mesh(new THREE.CylinderGeometry(.16, .16, len, 10), mat, 0, -len / 2, 0, p); return p; };
+  const legL = limb(-.45, 1.6, 1.5, dark), legR = limb(.45, 1.6, 1.5, dark);
+  mesh(new THREE.BoxGeometry(.55, .28, .8), dark, 0, -1.5, .15, legL); mesh(new THREE.BoxGeometry(.55, .28, .8), dark, 0, -1.5, .15, legR);
+  const armL = limb(-1.18, 4.2, 1.6, dark), armR = limb(1.18, 4.2, 1.6, dark);
+  const bat = mesh(new THREE.CylinderGeometry(.13, .34, 2.7, 16), std(0xE3B778, { roughness: .4 }), 0, -2.85, 0, armR);
+  return { g, body, faceMat, legL, legR, armL, armR, bat };
+})();
+
+// ------------------------------------------------------------------ Tralalero Tralala: a shark in sneakers
+const shark = (() => {
+  const root = new THREE.Group(); scene.add(root);
+  const g = new THREE.Group(); g.scale.setScalar(.82); root.add(g);
+  const blue = std(0x3E8EF7, { roughness: .35 }), white = std(0xF4F8FF, { roughness: .4 });
+  const body = mesh(new THREE.SphereGeometry(1, 40, 28), blue, 0, 2.9, 0, g); body.scale.set(2.5, 1.3, 1.25);
+  const belly = mesh(new THREE.SphereGeometry(1, 32, 20), white, -.2, 2.55, .12, g); belly.scale.set(2.25, .95, 1.17);
+  const eyeW = mesh(new THREE.SphereGeometry(.36, 20, 14), white, -1.55, 3.35, .82, g);
+  const pupil = mesh(new THREE.SphereGeometry(.19, 16, 10), std(0x101018), -1.66, 3.36, 1.1, g);
+  mesh(new THREE.SphereGeometry(.3, 16, 10), white, -1.55, 3.35, -.82, g);
+  const brow = mesh(new THREE.BoxGeometry(.6, .12, .14), std(0x1B3E8F), -1.55, 3.82, .95, g);
+  const mouth = mesh(new THREE.SphereGeometry(1, 24, 12), std(0x5A0F1E), -1.95, 2.45, .6, g); mouth.scale.set(.62, .24, .42);
+  for (let i = 0; i < 6; i++) { const tth = mesh(new THREE.ConeGeometry(.08, .2, 4), white, -2.3 + i * .14, 2.58 - Math.abs(i - 2.5) * .02, .78 + Math.sin(i * .5) * .05, g); tth.rotation.x = Math.PI; }
+  const dorsal = mesh(new THREE.ConeGeometry(.75, 1.5, 4), blue, .3, 4.5, 0, g); dorsal.scale.z = .3; dorsal.rotation.z = -.35;
+  const tail = new THREE.Group(); tail.position.set(2.35, 3.0, 0); g.add(tail);
+  const t1 = mesh(new THREE.ConeGeometry(.6, 1.6, 4), blue, .55, .55, 0, tail); t1.scale.z = .25; t1.rotation.z = -.9;
+  const t2 = mesh(new THREE.ConeGeometry(.5, 1.3, 4), blue, .5, -.45, 0, tail); t2.scale.z = .25; t2.rotation.z = -2.3;
+  const fin = mesh(new THREE.ConeGeometry(.45, 1.1, 4), blue, -.6, 2.2, 1.15, g); fin.scale.z = .25; fin.rotation.set(1.1, 0, -2.2);
+  const legs = [[-1.0, .36], [0.05, -.36], [1.0, .36]].map(([x, z], i) => {
+    const p = new THREE.Group(); p.position.set(x, 1.75, z); g.add(p);
+    mesh(new THREE.CylinderGeometry(.2, .2, 1.4, 12), blue, 0, -.7, 0, p);
+    const shoe = new THREE.Group(); shoe.position.set(-.18, -1.45, 0); p.add(shoe);
+    mesh(new THREE.BoxGeometry(1.0, .22, .58), white, 0, -.05, 0, shoe);
+    mesh(new THREE.BoxGeometry(.85, .38, .52), std(0x1565FF, { roughness: .45 }), .05, .24, 0, shoe);
+    mesh(new THREE.BoxGeometry(.5, .1, .54), white, .02, .26, 0, shoe);
+    mesh(new THREE.BoxGeometry(.3, .32, .54), white, -.38, .14, 0, shoe);
+    return p;
+  });
+  return { root, g, legs, tail, pupil, brow, eyeW };
+})();
+
+// ------------------------------------------------------------------ effects
+const rings = [...Array(4)].map(() => { const m = new THREE.Mesh(new THREE.TorusGeometry(1, .12, 8, 48), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true })); m.rotation.x = Math.PI / 2; scene.add(m); return m; });
+const RING_EV = [];      // [t, x, color, size]
+T.knocks.forEach(k => RING_EV.push([k, -1.7, 0xFFD93D, 3]));
+RING_EV.push([T.smash, -1.7, 0xFFFFFF, 7], [T.sharkDown, 3.3, 0x4CC9F0, 3], [T.stuck, -3.6, 0xFFD93D, 3], [T.tungLand, -3.4, 0xffffff, 3], [T.sharkLand, 3.3, 0xffffff, 3], [T.boom, 0, 0xFFFFFF, 9]);
+const tornado = [...Array(3)].map((_, i) => { const m = new THREE.Mesh(new THREE.TorusGeometry(1, .1, 6, 40), new THREE.MeshBasicMaterial({ color: [0x9BF6FF, 0xffffff, 0x4CC9F0][i], transparent: true })); m.rotation.x = Math.PI / 2; scene.add(m); return m; });
+const burst = [...Array(40)].map((_, i) => { const m = new THREE.Mesh(new THREE.BoxGeometry(.5, .5, .5), std([0xFF595E, 0xFFCA3A, 0x8AC926, 0x1982C4, 0x6A4C93, 0xFF8FAB][i % 6], { emissive: 0x222222 })); scene.add(m); return m; });
+
+// ------------------------------------------------------------------ choreography
+const TX = -3.4, SX = 3.3;
+const charge = t => {            // 0..1 progress of the final charge, with a slow-motion middle
+  if (t < T.charge) return 0;
+  if (t < T.slow0) return .62 * prog(t, T.charge, T.slow0) ** 1.4;
+  if (t < T.slow1) return lerp(.62, .86, prog(t, T.slow0, T.slow1));
+  return lerp(.86, 1, prog(t, T.slow1, T.boom));
+};
+const slowmo = t => t > T.slow0 && t < T.slow1;
+function batAngle(t) {
+  let a = .55 + Math.sin(t * 5) * .05;
+  if (t > 1.4 && t < 2.4) { for (const k of [1.7, 2.1]) a = Math.max(a, 2.2 * pulse(t, k - .25, .4)); }
+  T.knocks.forEach(k => { if (t > k - .32 && t < k + .3) a = t < k ? lerp(.55, 2.5, eo(prog(t, k - .32, k - .12))) * (t < k - .12 ? 1 : 1) - (t > k - .12 ? lerp(0, 2.25, ei(prog(t, k - .12, k))) : 0) : lerp(.25, .55, prog(t, k, k + .3)); });
+  if (t > T.smash - .65 && t < T.smash + .5) a = t < T.smash - .15 ? lerp(.55, 3.1, eo(prog(t, T.smash - .65, T.smash - .25))) : t < T.smash ? lerp(3.1, .2, ei(prog(t, T.smash - .15, T.smash))) : lerp(.2, .55, prog(t, T.smash + .1, T.smash + .5));
+  if (t > T.crouch && t < T.boom) a = lerp(.55, 2.7, eo(prog(t, T.crouch, T.charge)));
+  if (t > T.who + .3) a = 1.4 + Math.sin(t * 9) * 1.1;
+  return a;
+}
+function tungState(t) {
+  const s = { x: TX, y: 0, ry: .35, rz: 0, sq: 0, face: 'normal', bat: batAngle(t), armL: -.3 + Math.sin(t * 5) * .1, lL: 0, lR: 0 };
+  // intro drop
+  if (t < T.tungLand) { const k = prog(t, .15, T.tungLand); s.y = lerp(16, 0, k * k); s.sq = -.1; }
+  s.sq += .35 * pulse(t, T.tungLand, .25) * (t > T.tungLand ? 1 : 0);
+  if (t > 1.3 && t < T.r1) s.face = 'angry';
+  if (t > T.r1 + .8 && t < T.r2) s.face = 'angry';
+  T.knocks.forEach(k => { s.sq += .12 * pulse(t, k, .18); s.rz -= .12 * pulse(t, k - .15, .3); });
+  if (t > T.smash - .65 && t < T.smash + .4) { s.rz = .25 * pulse(t, T.smash - .65, .5) - .2 * pulse(t, T.smash - .1, .3); s.y = 1.2 * pulse(t, T.smash - .4, .4); s.sq += .3 * pulse(t, T.smash, .25); }
+  // round 2: spun into the air, head first into the stage
+  if (t > T.hit - .2 && t < T.hit) s.face = 'angry';
+  if (t >= T.hit && t < T.fin) {
+    s.face = 'dizzy';
+    if (t < T.stuck) { const k = prog(t, T.hit, T.stuck); s.x = lerp(TX, -3.6, k); s.y = 9 * 4 * k * (1 - k) + lerp(0, 4.6, ei(k)); s.ry = .35 + (t - T.hit) * 22; s.rz = Math.PI * eio(k); }
+    else if (t < T.popOut) { s.x = -3.6; s.y = 4.5; s.rz = Math.PI; s.ry = .35; s.lL = Math.sin(t * 22) * .6; s.lR = -Math.sin(t * 22) * .6; s.armL = -.3; s.bat = .55; }
+    else { const k = prog(t, T.popOut, T.fin); s.x = lerp(-3.6, TX, k); s.y = lerp(4.5, 0, k) + 3 * k * (1 - k); s.rz = Math.PI * (1 - eo(k)); }
+  }
+  // final round
+  if (t >= T.fin) { s.face = 'angry'; }
+  if (t > T.crouch && t < T.charge) s.sq = .2 * eo(prog(t, T.crouch, T.charge));
+  if (t >= T.charge && t < T.boom) { const c = charge(t); s.x = lerp(TX, -1.55, c); s.rz = -.18; const ph = t * (slowmo(t) ? 6 : 22); s.lL = Math.sin(ph) * .8; s.lR = -Math.sin(ph) * .8; s.armL = -Math.sin(ph) * .6; }
+  if (t >= T.boom && t < T.who) {
+    s.face = 'dizzy'; const k = prog(t, T.boom, T.boom + 1.0);
+    s.x = lerp(-1.55, -4.3, eo(k)); s.y = 5 * 4 * k * (1 - k); s.rz = lerp(0, Math.PI / 2, eo(k)) + (k < 1 ? k * 6 * Math.PI : 0) * 0 + (1 - k) * k * 8;
+    if (k >= 1) { s.y = 1.15; s.rz = Math.PI / 2; s.lL = Math.sin(t * 15) * .3; s.lR = Math.cos(t * 15) * .3; }
+  }
+  if (t >= T.who) {
+    const k = prog(t, T.who, T.who + .5); s.face = 'happy';
+    s.x = lerp(-4.3, -3.0, eo(k)); s.y = lerp(1.15, 0, k) + 4 * k * (1 - k) + Math.abs(Math.sin((t - T.who) * 5.5)) * .9 * prog(t, T.who + .5, T.who + .7);
+    s.rz = Math.PI / 2 * (1 - eo(k)); s.ry = .2;
+    s.armL = -2.6 + Math.sin(t * 9) * .4;
+  }
+  return s;
+}
+function sharkState(t) {
+  const s = { x: SX, y: 0, ry: .5, rz: 0, sq: 0, legs: [0, 0, 0], tail: Math.sin(t * 6) * .25, angry: false, scale: 1 };
+  const walk = (ph, amp) => { s.legs = [Math.sin(ph) * amp, -Math.sin(ph) * amp, Math.sin(ph + 1) * amp]; };
+  walk(t * 4, .08);
+  if (t < T.sharkLand) { const k = prog(t, .55, T.sharkLand); s.y = lerp(16, 0, k * k); s.rz = (1 - k) * 2; }
+  s.sq += .35 * pulse(t, T.sharkLand, .25) * (t > T.sharkLand ? 1 : 0);
+  if (t > 2.1 && t < 3.1) { s.ry = .5 + eio(prog(t, 2.2, 2.9)) * Math.PI * 2; s.y = 1.2 * pulse(t, 2.2, .7); }
+  // round 1: launched by the smash
+  if (t >= T.smash && t < T.r2) {
+    if (t < T.sharkDown) { const k = prog(t, T.smash, T.sharkDown); s.x = lerp(SX, 3.6, k); s.y = 8 * 4 * k * (1 - k); s.rz = -k * Math.PI * 4; s.ry = .5 + k * 3; }
+    else { const k = prog(t, T.sharkDown, T.sharkDown + .5); s.x = 3.6; s.sq = .55 * (1 - eob(k)) + .3 * (1 - k); s.rz = Math.sin(t * 3) * .12; s.ry = .5 + Math.sin(t * 2.5) * .3; }
+  }
+  // round 2: tap dance, spin, dash
+  if (t >= T.r2 + .8 && t < T.fin) {
+    s.angry = t > T.spin - .5;
+    T.taps.forEach((k, i) => { s.y += .7 * pulse(t, k - .15, .3); s.rz += (i % 2 ? .15 : -.15) * pulse(t, k - .15, .3); });
+    walk(t * 14, .45 * prog(t, T.taps[0] - .3, T.taps[0]) * (1 - prog(t, T.spin - .1, T.spin)));
+    if (t >= T.spin && t < T.hit + .9) {
+      const sp = t < T.hit ? (t - T.spin) ** 2 * 26 + (t - T.spin) * 4 : 0;
+      s.ry = .5 + (t < T.hit ? sp : (T.hit - T.spin) ** 2 * 26 + (T.hit - T.spin) * 4 + (t - T.hit) * 18 * (1 - prog(t, T.hit, T.hit + .9)));
+      s.y = .4;
+      if (t > T.dash) s.x = t < T.hit ? lerp(SX, -1.3, eio(prog(t, T.dash, T.hit))) : lerp(-1.3, SX, eio(prog(t, T.hit + .1, T.hit + .9)));
+    }
+  }
+  // final round
+  if (t >= T.fin) s.angry = true;
+  if (t > T.crouch && t < T.charge) s.sq = .2 * eo(prog(t, T.crouch, T.charge));
+  if (t >= T.charge && t < T.boom) { const c = charge(t); s.x = lerp(SX, 1.5, c); s.rz = .12; walk(t * (slowmo(t) ? 7 : 26), .7); s.ry = .15; }
+  if (t >= T.boom && t < T.who) {
+    const k = prog(t, T.boom, T.boom + 1.0);
+    s.x = lerp(1.5, 4.3, eo(k)); s.y = 5 * 4 * k * (1 - k); s.rz = lerp(0, Math.PI, eo(k)); s.ry = .3;
+    if (k >= 1) { s.y = 3.6; s.rz = Math.PI; walk(t * 18, .5); }
+  }
+  if (t >= T.who) {
+    const k = prog(t, T.who, T.who + .5); s.angry = false;
+    s.x = lerp(4.3, 3.1, eo(k)); s.y = lerp(3.6, 0, k) + 4 * k * (1 - k) + Math.abs(Math.sin((t - T.who) * 5.5 + 1.5)) * .9 * prog(t, T.who + .5, T.who + .7);
+    s.rz = Math.PI * (1 - eo(k)); s.ry = .45 + Math.sin(t * 4) * .2; s.tail = Math.sin(t * 14) * .5; walk(t * 11, .4);
+  }
+  return s;
+}
+function applyTung(s) {
+  tung.g.position.set(s.x, s.y, 0); tung.g.rotation.set(0, s.ry, s.rz);
+  tung.g.scale.set(1 + s.sq * .5, 1 - s.sq, 1 + s.sq * .5);
+  tung.armR.rotation.set(0, 0, s.bat); tung.armL.rotation.set(0, 0, s.armL);
+  tung.legL.rotation.x = s.lL; tung.legR.rotation.x = s.lR;
+  const tx = tungTex[s.face]; if (tung.faceMat.map !== tx) { tung.faceMat.map = tx; tung.faceMat.needsUpdate = true; }
+}
+function applyShark(s) {
+  shark.root.position.set(s.x, s.y, 0); shark.root.rotation.set(0, s.ry, s.rz);
+  shark.root.scale.set(1 + s.sq * .5, 1 - s.sq, 1 + s.sq * .5);
+  shark.legs.forEach((l, i) => { l.rotation.z = s.legs[i]; });
+  shark.tail.rotation.y = s.tail; shark.brow.visible = s.angry; shark.brow.rotation.z = -.45;
+}
+
+// camera: [x, y, z, lookX, lookY]
+const WIDE = [0, 4.0, 22, 0, 3.3];
+const camKeys = keys([
+  [0, [0, 7, 36, 0, 4.5]], [1.0, WIDE], [T.r1 + 1.2, WIDE], [T.r1 + 1.55, [-2.2, 4.4, 15.5, -2.2, 3.4]], [T.smash - .3, [-2.2, 4.4, 15.5, -2.2, 3.4]],
+  [T.smash + .35, [1.6, 7, 25, 1.6, 6]], [T.sharkDown - .1, [1.6, 7, 25, 1.6, 6]], [T.sharkDown + .3, [2.5, 4, 17, 2.5, 2.8]], [T.r2 - .05, [2.5, 4, 17, 2.5, 2.8]],
+  [T.r2, WIDE], [T.r2 + 1.2, WIDE], [T.r2 + 1.55, [2.2, 4.2, 16, 2.2, 3]], [T.dash - .1, [2.2, 4.2, 16, 2.2, 3]], [T.hit, [-.6, 5, 22, -.6, 3.6]],
+  [T.hit + .5, [-3.4, 7.5, 26, -3.2, 6]], [T.stuck - .1, [-3.4, 7.5, 26, -3.2, 6]], [T.stuck + .3, [-3.4, 4.5, 17, -3.4, 3]], [T.fin - .05, [-3.4, 4.5, 17, -3.4, 3]],
+  [T.fin, WIDE], [T.slow0 - .1, WIDE], [T.slow0 + .3, [0, 4.2, 14, 0, 3.2]], [T.boom, [0, 4.2, 14, 0, 3.2]], [T.boom + .6, [0, 5, 25, 0, 3.2]], [T.who, [0, 5, 25, 0, 3.2]], [T.who + .6, WIDE],
+]);
+const SHAKES = [...T.knocks.map(k => [k, .35]), [T.smash, 1], [T.sharkDown, .4], [T.hit, .8], [T.stuck, .45], [T.boom, 1.5], [T.tungLand, .5], [T.sharkLand, .5]];
+const shake = t => { let s = 0; for (const [k, a] of SHAKES) if (t >= k) s = Math.max(s, a * Math.exp(-(t - k) * 7) * (t - k < 1 ? 1 : 0)); return s; };
+function camAt(t) {
+  let p = camKeys(t).slice();
+  if (t > T.who + .6) { p[0] = Math.sin((t - T.who) * .8) * 1.2; }
+  const s = shake(t); p[0] += Math.sin(t * 71) * .4 * s; p[1] += Math.cos(t * 59) * .35 * s;
+  return p;
+}
+function section(t) { return t < T.r1 ? 'intro' : t < T.r2 ? 'r1' : t < T.fin ? 'r2' : t < T.who ? 'fin' : 'who'; }
+function hp(t, who) {
+  let v = 100;
+  if (who === 'shark') v -= 45 * eo(prog(t, T.smash, T.smash + .5));
+  else v -= 50 * eo(prog(t, T.hit, T.hit + .5));
+  v *= 1 - eo(prog(t, T.boom, T.boom + .5));
+  return lerp(v, 100, eo(prog(t, T.who, T.who + .7)));
+}
+
+// ------------------------------------------------------------------ 2D overlay
+const C = document.getElementById('c'), X = C.getContext('2d');
+const v3 = new THREE.Vector3();
+const toScreen = (x, y, z) => { v3.set(x, y, z).project(cam); return [(v3.x + 1) / 2 * W, (1 - v3.y) / 2 * H]; };
+function rr(x, y, w, h, r) { X.beginPath(); X.roundRect(x, y, w, h, r); }
+function outlined(s, x, y, size, fill, { align = 'center', stroke = 16, f = 'IT', strokeCol = '#1B0B2E' } = {}) {
+  X.font = `${size}px ${f}`; X.textAlign = align; X.textBaseline = 'middle'; X.lineJoin = 'round';
+  X.lineWidth = stroke; X.strokeStyle = strokeCol; X.strokeText(s, x, y); X.fillStyle = fill; X.fillText(s, x, y);
+}
+function starburst(r, n = 12, inner = .72) { X.beginPath(); for (let i = 0; i < n * 2; i++) { const a = i / (n * 2) * Math.PI * 2, rr_ = i % 2 ? r * inner : r; X.lineTo(Math.cos(a) * rr_, Math.sin(a) * rr_); } X.closePath(); }
+const POPS = [
+  ...T.knocks.map((k, i) => [k, 'TUNG!', [290, 560, 790][i], [880, 760, 880][i], '#FFD93D', [-.2, .1, -.1][i], 120, '#FF6B00']),
+  [T.smash, 'SAHUR!!', 540, 640, '#FFFFFF', -.08, 170, '#FF2E63'],
+  [T.sharkDown, 'SPLAT!', 790, 1180, '#9BF6FF', .15, 100, '#3A86FF'],
+  ...T.taps.slice(0, 3).map((k, i) => [k, ['TRA', 'LA', 'LA!'][i], [700, 830, 900][i], [740, 640, 760][i], '#FFFFFF', [.15, -.1, .12][i], 100, '#3A86FF']),
+  [T.hit, 'TRALALA!!', 540, 640, '#FFFFFF', .06, 150, '#3A86FF'],
+  [T.stuck, 'BONK!', 300, 1180, '#FFD93D', -.15, 110, '#FF6B00'],
+  [T.boom, 'BOOM!!', 540, 760, '#FFFFFF', -.05, 230, '#FF2E63'],
+];
+function pops(t) {
+  for (const [t0, s, x, y, fill, rot, size, back] of POPS) {
+    const k = prog(t, t0 - .03, t0 + .15), out = prog(t, t0 + .75, t0 + 1.0); if (k <= 0 || out >= 1) continue;
+    X.save(); X.translate(x, y); X.rotate(rot); const sc = lerp(.3, 1, eob(k)) * (1 + .1 * out); X.scale(sc, sc); X.globalAlpha = 1 - out;
+    X.font = `${size}px IT`; const w = X.measureText(s).width;
+    X.save(); X.scale((w * .5 + size * .5) / size, 1); starburst(size * 1.0, 14, .78); X.fillStyle = back; X.fill(); X.lineWidth = 10; X.strokeStyle = '#1B0B2E'; X.stroke(); X.restore();
+    outlined(s, 0, 4, size, fill, { stroke: 18 }); X.restore();
+  }
+}
+const BANNERS = [[T.r1, 'ROUND 1', '#FF8A00'], [T.r2, 'ROUND 2', '#00A6FF'], [T.fin, 'FINAL ROUND', '#FF2E63']];
+function banners(t) {
+  for (const [t0, s, col] of BANNERS) {
+    const k = prog(t, t0, t0 + .25), out = prog(t, t0 + .95, t0 + 1.2); if (k <= 0 || out >= 1) continue;
+    const x = lerp(-W, 0, eo(k)) + lerp(0, W, ei(out));
+    X.save(); X.translate(x, 0);
+    X.fillStyle = 'rgba(20,6,40,0.35)'; X.fillRect(0, 0, W, H);
+    X.save(); X.translate(W / 2, 960); X.rotate(-.06);
+    X.fillStyle = '#1B0B2E'; X.fillRect(-W, -125, W * 2, 250); X.fillStyle = col; X.fillRect(-W, -110, W * 2, 220);
+    X.fillStyle = 'rgba(255,255,255,0.18)'; for (let i = -8; i < 8; i++) { X.beginPath(); X.moveTo(i * 160 + (t * 400) % 160, -110); X.lineTo(i * 160 + 60 + (t * 400) % 160, -110); X.lineTo(i * 160 + (t * 400) % 160, 110); X.lineTo(i * 160 - 60 + (t * 400) % 160, 110); X.fill(); }
+    const s2 = 1 + .06 * Math.sin(t * 20); X.scale(s2, s2); outlined(s, 0, 6, s.length > 8 ? 130 : 160, '#FFFFFF', { stroke: 20 }); X.restore();
+    X.restore();
+  }
+}
+function hpBars(t) {
+  const a = prog(t, T.r1, T.r1 + .3); if (a <= 0) return;
+  X.save(); X.translate(0, (1 - eo(a)) * -260);
+  const bar = (left, name, col, v, hitT) => {
+    const x0 = left ? 70 : 560, w = 450, shk = hitT.reduce((m, h) => Math.max(m, t > h ? Math.exp(-(t - h) * 9) : 0), 0);
+    X.save(); X.translate(Math.sin(t * 80) * 10 * shk, 0);
+    rr(x0, 230, w, 120, 28); X.fillStyle = 'rgba(27,11,46,0.85)'; X.fill();
+    X.beginPath(); X.arc(left ? x0 + 60 : x0 + w - 60, 290, 44, 0, 7); X.fillStyle = col; X.fill(); X.lineWidth = 6; X.strokeStyle = '#fff'; X.stroke();
+    // tiny portraits
+    const px = left ? x0 + 60 : x0 + w - 60;
+    if (left) { rr(px - 20, 262, 40, 58, 8); X.fillStyle = '#C98A4B'; X.fill(); X.fillStyle = '#fff'; X.beginPath(); X.arc(px - 8, 280, 7, 0, 7); X.arc(px + 8, 280, 7, 0, 7); X.fill(); X.fillStyle = '#2A1406'; X.beginPath(); X.arc(px - 7, 281, 3.5, 0, 7); X.arc(px + 9, 281, 3.5, 0, 7); X.fill(); }
+    else { X.save(); X.translate(px, 292); X.fillStyle = '#3E8EF7'; X.beginPath(); X.ellipse(0, 0, 32, 17, 0, 0, 7); X.fill(); X.beginPath(); X.moveTo(-2, -16); X.lineTo(10, -30); X.lineTo(12, -14); X.fill(); X.fillStyle = '#fff'; X.beginPath(); X.ellipse(-4, 6, 24, 8, 0, 0, 7); X.fill(); X.beginPath(); X.arc(-18, -5, 6, 0, 7); X.fill(); X.fillStyle = '#111'; X.beginPath(); X.arc(-19, -5, 3, 0, 7); X.fill(); X.restore(); }
+    X.font = '30px IT'; X.fillStyle = '#fff'; X.textAlign = left ? 'left' : 'right'; X.textBaseline = 'middle';
+    X.fillText(name, left ? x0 + 120 : x0 + w - 120, 262);
+    const bx = left ? x0 + 120 : x0 + 30, bw = w - 150;
+    rr(bx, 290, bw, 36, 18); X.fillStyle = '#3A2350'; X.fill();
+    const fw = bw * v / 100;
+    if (fw > 4) { rr(left ? bx : bx + bw - fw, 290, fw, 36, 18); const gr = X.createLinearGradient(0, 290, 0, 326); gr.addColorStop(0, v > 35 ? '#B6FF5C' : '#FF5C5C'); gr.addColorStop(1, v > 35 ? '#38B000' : '#C9184A'); X.fillStyle = gr; X.fill(); }
+    X.restore();
+  };
+  bar(true, 'TUNG TUNG', '#FF8A00', hp(t, 'tung'), [T.hit, T.boom]);
+  bar(false, 'TRALALERO', '#00A6FF', hp(t, 'shark'), [T.smash, T.boom]);
+  X.restore();
+}
+function intro(t) {
+  const out = prog(t, T.r1 - .35, T.r1); if (out >= 1) return;
+  X.save(); X.globalAlpha = 1 - out;
+  const kL = prog(t, .2, .5), kR = prog(t, .6, .9);
+  if (kL > 0) { X.save(); X.translate(lerp(-700, 0, eob(kL)), 0); X.rotate(-.04); outlined('TUNG TUNG TUNG', W / 2, 420, 104, '#FFFFFF', { stroke: 22 }); outlined('SAHUR', W / 2, 530, 130, '#FF8A00', { stroke: 22 }); X.restore(); }
+  if (kR > 0) { X.save(); X.translate(lerp(700, 0, eob(kR)), 0); X.rotate(.03); outlined('TRALALERO', W / 2, 1360, 120, '#FFFFFF', { stroke: 22 }); outlined('TRALALA', W / 2, 1480, 120, '#00C2FF', { stroke: 22 }); X.restore(); }
+  const kv = prog(t, T.vs, T.vs + .25);
+  if (kv > 0) {
+    X.save(); X.translate(W / 2, 960); const s = lerp(3, 1, eo(kv)) * (1 + .05 * Math.sin(t * 18)); X.scale(s, s); X.rotate(-.1);
+    X.strokeStyle = '#FFE14D'; X.lineWidth = 14; X.lineJoin = 'miter';
+    X.beginPath(); X.moveTo(-40, -230); X.lineTo(20, -110); X.lineTo(-20, -100); X.lineTo(50, 30); X.stroke();
+    starburst(150, 16, .7); X.fillStyle = '#FF2E63'; X.fill(); X.lineWidth = 10; X.strokeStyle = '#1B0B2E'; X.stroke();
+    outlined('VS', 0, 8, 150, '#FFFFFF', { stroke: 20 }); X.restore();
+  }
+  X.restore();
+}
+function flash(t) {
+  let a = 0;
+  for (const [k, s] of [[T.vs, .8], [T.smash, .7], [T.hit, .6], [T.boom, 1], [T.who, .5]]) if (t >= k) a = Math.max(a, s * (1 - prog(t, k, k + .35)));
+  if (a > 0) { X.fillStyle = `rgba(255,255,255,${a})`; X.fillRect(0, 0, W, H); }
+  if (slowmo(t)) {               // slow-motion vignette and stripes
+    const k = Math.min(prog(t, T.slow0, T.slow0 + .2), 1 - prog(t, T.slow1 - .1, T.slow1));
+    const g = X.createRadialGradient(W / 2, H / 2, 300, W / 2, H / 2, 1100); g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, `rgba(30,0,60,${.7 * k})`); X.fillStyle = g; X.fillRect(0, 0, W, H);
+    X.save(); X.globalAlpha = k; outlined('SLOW-MO', W / 2, 1400, 70, '#FFD93D', { stroke: 14 }); X.restore();
+  }
+}
+function dizzyStars(t, pos, from, to) {
+  if (t < from || t > to) return;
+  const a = prog(t, from, from + .2) * (1 - prog(t, to - .2, to));
+  X.save(); X.globalAlpha = a;
+  for (let i = 0; i < 3; i++) {
+    const ang = t * 7 + i * 2.1, x = pos[0] + Math.cos(ang) * 90, y = pos[1] + Math.sin(ang) * 26;
+    X.save(); X.translate(x, y); X.rotate(t * 4); starburst(26, 5, .45); X.fillStyle = '#FFD93D'; X.fill(); X.lineWidth = 4; X.strokeStyle = '#1B0B2E'; X.stroke(); X.restore();
+  }
+  X.restore();
+}
+function notes(t, pos) {
+  if (t < T.taps[0] - .3 || t > T.spin + .3) return;
+  for (let i = 0; i < 6; i++) {
+    const t0 = T.taps[0] - .3 + i * .2, k = prog(t, t0, t0 + 1.1); if (k <= 0 || k >= 1) continue;
+    const x = pos[0] + (i % 2 ? 1 : -1) * (40 + k * 120) + Math.sin(k * 8) * 20, y = pos[1] - k * 330;
+    X.save(); X.globalAlpha = 1 - k; X.translate(x, y); X.rotate(Math.sin(k * 6) * .3);
+    X.fillStyle = ['#FFFFFF', '#FFD93D', '#9BF6FF'][i % 3]; X.strokeStyle = '#1B0B2E'; X.lineWidth = 5;
+    X.beginPath(); X.ellipse(0, 0, 20, 15, -.4, 0, 7); X.fill(); X.stroke(); X.fillRect(14, -70, 8, 70); X.strokeRect(14, -70, 8, 70);
+    X.beginPath(); X.moveTo(22, -70); X.quadraticCurveTo(50, -55, 40, -30); X.lineWidth = 8; X.stroke(); X.restore();
+  }
+}
+function koText(t) {
+  const k = prog(t, T.ko, T.ko + .25), out = prog(t, T.who - .3, T.who); if (k <= 0 || out >= 1) return;
+  X.save(); X.globalAlpha = 1 - out; X.translate(W / 2, 600); X.rotate(-.05); const s = lerp(2.5, 1, eob(k)) * (1 + .04 * Math.sin(t * 16)); X.scale(s, s);
+  outlined('DOUBLE', 0, -70, 110, '#FFD93D', { stroke: 22 }); outlined('K.O.!', 0, 60, 190, '#FF2E63', { stroke: 26 }); X.restore();
+}
+const CONF = [...Array(150)].map((_, i) => ({ x: rand(i) * W, v: 400 + rand(i + 1) * 600, d: rand(i + 2) * 2, r: rand(i + 3) * 6, s: 16 + rand(i + 4) * 16, c: ['#FF595E', '#FFCA3A', '#8AC926', '#1982C4', '#6A4C93', '#FF8FAB', '#FFFFFF'][i % 7], sw: rand(i + 5) * 3 }));
+function confetti(t, t0) {
+  const tt = t - t0; if (tt < 0) return;
+  CONF.forEach(p => {
+    const u = (tt + p.d) % 4; const y = -40 + u * p.v * .6, x = p.x + Math.sin(u * 3 + p.sw) * 60;
+    X.save(); X.translate(x, y); X.rotate(p.r + u * 6); X.scale(1, Math.cos(u * 8 + p.sw)); X.fillStyle = p.c; X.fillRect(-p.s / 2, -p.s * .3, p.s, p.s * .6); X.restore();
+  });
+}
+function whoWins(t) {
+  const k = prog(t, T.who + .3, T.who + .6); if (k <= 0) return;
+  X.save(); X.translate(W / 2, 470); const s = lerp(.3, 1, eob(k)) * (1 + .05 * Math.sin(t * 9)); X.scale(s, s); X.rotate(Math.sin(t * 3) * .03);
+  outlined('WHO WINS?', 0, 0, 140, '#FFD93D', { stroke: 26 }); X.restore();
+  const side = Math.floor((t - T.who) / .45) % 2;
+  [['TEAM TUNG', '#FF8A00', 290, 0], ['TEAM TRALA', '#00A6FF', 790, 1]].forEach(([s_, col, x, i]) => {
+    const kk = prog(t, T.who + .7 + i * .2, T.who + 1.0 + i * .2); if (kk <= 0) return;
+    const on = side === i, sc = eob(kk) * (on ? 1.08 : .95);
+    X.save(); X.translate(x, 1240); X.scale(sc, sc); X.rotate(on ? (i ? .04 : -.04) : 0);
+    rr(-220, -70, 440, 140, 70); X.fillStyle = col; X.fill(); X.lineWidth = 10; X.strokeStyle = on ? '#FFFFFF' : '#1B0B2E'; X.stroke();
+    outlined(s_, 0, 4, 58, '#FFFFFF', { stroke: 12 }); X.restore();
+  });
+  const kc = prog(t, T.comment, T.comment + .3);
+  if (kc > 0) { X.save(); X.globalAlpha = kc; X.translate(W / 2, 1110); const s2 = eob(kc); X.scale(s2, s2); outlined('COMMENT YOUR PICK!', 0, 0, 56, '#FFFFFF', { stroke: 14 }); X.restore(); }
+}
+function cursor(x, y, press) {
+  X.save(); X.translate(x, y); const s = 1.3 * (1 - .15 * press); X.scale(s, s);
+  X.beginPath(); X.moveTo(0, 0); X.lineTo(0, 58); X.lineTo(15, 45); X.lineTo(27, 70); X.lineTo(38, 65); X.lineTo(27, 41); X.lineTo(46, 41); X.closePath();
+  X.fillStyle = '#fff'; X.fill(); X.strokeStyle = '#120D1F'; X.lineWidth = 4; X.lineJoin = 'round'; X.stroke(); X.restore();
+}
+function subscribe(t) {
+  const t0 = T.sub, k = prog(t, t0, t0 + .45); if (k <= 0) return;
+  const tap = t0 + 1.0, done = t >= tap, press = pulse(t, tap - .06, .16);
+  X.save(); X.globalAlpha = clamp(k * 2.5);
+  X.translate(W / 2, 1420 + (1 - eo(k)) * 160); const s = lerp(.7, 1, eob(k)); X.scale(s, s);
+  X.shadowColor = 'rgba(0,0,0,0.45)'; X.shadowBlur = 40; X.shadowOffsetY = 12;
+  rr(-400, -70, 800, 140, 70); X.fillStyle = '#FFFFFF'; X.fill(); X.shadowColor = 'transparent';
+  X.beginPath(); X.arc(-326, 0, 48, 0, 7); const g = X.createLinearGradient(-374, -48, -278, 48); g.addColorStop(0, '#FF8A00'); g.addColorStop(1, '#00A6FF'); X.fillStyle = g; X.fill();
+  X.font = '44px IT'; X.fillStyle = '#fff'; X.textAlign = 'center'; X.textBaseline = 'middle'; X.fillText('VS', -326, 2);
+  X.font = '36px I7'; X.fillStyle = '#0A0C11'; X.textAlign = 'left'; X.textBaseline = 'alphabetic'; X.fillText('Subscribe for more', -258, -6);
+  X.font = '24px I6'; X.fillStyle = '#6B7280'; X.fillText('more battles every week', -258, 30);
+  X.save(); X.translate(262, 0); const bs = 1 - .08 * press; X.scale(bs, bs);
+  rr(-112, -40, 224, 80, 40); X.fillStyle = done ? '#E5E7EB' : '#FF0033'; X.fill();
+  X.font = (done ? 24 : 27) + 'px I7'; X.fillStyle = done ? '#4B5563' : '#FFFFFF'; X.textAlign = 'center'; X.textBaseline = 'middle'; X.fillText(done ? 'SUBSCRIBED' : 'SUBSCRIBE', 0, 2); X.restore();
+  if (done) { const r = prog(t, tap, tap + .5); X.beginPath(); X.arc(262, 0, 30 + 120 * eo(r), 0, 7); X.strokeStyle = `rgba(255,0,51,${.6 * (1 - r)})`; X.lineWidth = 6; X.stroke(); }
+  const m = eio(prog(t, t0 + .4, tap - .05)), out = eio(prog(t, tap + .35, tap + .8));
+  if (out < 1) cursor(lerp(420, 290, m) + out * 220, lerp(200, 22, m) + out * 160, press);
+  X.restore();
+}
+
+// ------------------------------------------------------------------ sound cues
+ev(.15, 'fall'); ev(.55, 'fall'); ev(T.tungLand, 'thud'); ev(T.sharkLand, 'thud'); ev(T.vs, 'vineboom'); ev(T.vs, 'whoosh', .8);
+ev(1.7, 'tung', .8); ev(2.1, 'tung', .8); ev(2.25, 'spin', .7); ev(T.horn, 'airhorn');
+[T.r1, T.r2, T.fin].forEach(b => { ev(b, 'whoosh'); ev(b + .15, 'bell'); });
+T.knocks.forEach(k => ev(k, 'tung'));
+ev(T.smash - .6, 'windup'); ev(T.smash, 'tung', 1.2); ev(T.smash, 'vineboom'); ev(T.smash + .05, 'slideup'); ev(T.sharkDown, 'splat'); ev(T.sharkDown + .2, 'tweet');
+T.taps.forEach(k => ev(k, 'squeak'));
+ev(T.spin, 'spin'); ev(T.hit, 'hit'); ev(T.hit + .05, 'slideup'); ev(T.stuck, 'bonk'); ev(T.stuck + .3, 'tweet', .7); ev(T.popOut, 'pop');
+ev(T.crouch, 'scratch'); ev(T.charge, 'whoosh'); ev(T.slow0, 'heartbeat'); ev(T.slow0 + .45, 'heartbeat'); ev(T.boom, 'explode'); ev(T.boom, 'vineboom', 1.2);
+ev(T.ko, 'womp'); ev(T.who, 'boing'); ev(T.who + .05, 'airhorn'); ev(T.who + .3, 'confetti'); ev(T.who + .7, 'pop'); ev(T.who + .9, 'pop'); ev(T.comment, 'pop');
+ev(T.sub, 'pop'); ev(T.sub + .95, 'click');
+EVENTS.sort((a, b) => a.t - b.t);
+
+// ------------------------------------------------------------------ frame
+function render(t) {
+  const sec = section(t); if (bgMat.map !== RAYS[sec]) { bgMat.map = RAYS[sec]; bgMat.needsUpdate = true; }
+  bg.rotation.z = t * (slowmo(t) ? .05 : .25);
+  const ts = tungState(t), ss = sharkState(t); applyTung(ts); applyShark(ss);
+  balloons.forEach((b, i) => { const u = b.userData; b.position.set(u.x + Math.sin(t * .8 + i) * .4, u.y + Math.sin(t * 1.3 + i * 2) * .5, u.z); b.rotation.z = Math.sin(t + i) * .1; });
+  rings.forEach(r => { r.visible = false; });
+  let ri = 0;
+  for (const [k, x, col, size] of RING_EV) { if (t >= k && t < k + .6 && ri < rings.length) { const r = rings[ri++], p = prog(t, k, k + .6); r.visible = true; r.position.set(x, .08, 0); r.scale.setScalar(.5 + size * eo(p)); r.material.color.set(col); r.material.opacity = 1 - p; } }
+  const torn = t > T.spin && t < T.hit + .8;
+  tornado.forEach((m, i) => { m.visible = torn; if (!torn) return; const a = prog(t, T.spin, T.spin + .3) * (1 - prog(t, T.hit + .4, T.hit + .8)); m.position.set(ss.x, .8 + i * 1.5, 0); m.scale.setScalar((1.8 + i * .7) * (1 + .15 * Math.sin(t * 30 + i))); m.rotation.z = t * 20; m.material.opacity = .65 * a; });
+  burst.forEach((m, i) => {
+    const k = prog(t, T.boom, T.boom + 1.4); m.visible = k > 0 && k < 1; if (!m.visible) return;
+    const a = rand(i) * Math.PI * 2, el = rand(i + 50) * 1.2 - .2, sp = 6 + rand(i + 9) * 8;
+    m.position.set(Math.cos(a) * Math.cos(el) * sp * eo(k), 3 + Math.sin(el) * sp * eo(k) - 6 * k * k, Math.sin(a) * Math.cos(el) * sp * .6 * eo(k));
+    m.rotation.set(k * 9 + i, k * 7, i); m.scale.setScalar(1.3 * (1 - k * .7));
+  });
+  const p = camAt(t); cam.position.set(p[0], p[1], p[2]); cam.lookAt(p[3], p[4], 0);
+  renderer.render(scene, cam);
+  X.setTransform(1, 0, 0, 1, 0, 0); X.globalAlpha = 1; X.drawImage(renderer.domElement, 0, 0);
+  if (t > T.who + .3) confetti(t, T.who + .3);
+  hpBars(t);
+  dizzyStars(t, toScreen(ss.x - 1.2, ss.y + 4.4, 0), T.sharkDown + .1, T.r2 - .1);
+  dizzyStars(t, toScreen(ts.x, ts.y + 1.0, 0), T.stuck + .1, T.popOut);
+  dizzyStars(t, toScreen(ts.x - .3, 2.6, 0), T.boom + 1.0, T.who);
+  dizzyStars(t, toScreen(ss.x, 2.0, 0), T.boom + 1.0, T.who);
+  notes(t, toScreen(ss.x - 1.0, ss.y + 4.5, 0));
+  pops(t); intro(t); koText(t); whoWins(t); flash(t); banners(t); subscribe(t);
+}
+window.render = render; window.TOTAL = TOTAL; window.EVENTS = EVENTS;
+window.SECTIONS = { r1: T.r1, r2: T.r2, fin: T.fin, quiet0: T.slow0 - .05, who: T.who, end: T.end };
+window.READY = true;
+</script>
+</body></html>
