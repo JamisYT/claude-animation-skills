@@ -6,6 +6,6 @@ cd "$(dirname "$0")"
 [ -s vo/vo.json ] || ../../kit/.venv/bin/python vo.py
 node render.js
 python3 audio.py
-ffmpeg -v error -y -i video.mp4 -i audio.wav -c:v copy -c:a aac -b:a 192k -shortest -movflags +faststart barn-animals.mp4
+ffmpeg -v error -y -i video.mp4 -i audio.wav -c:v copy -af loudnorm=I=-15:TP=-1.5:LRA=11 -c:a aac -b:a 192k -shortest -movflags +faststart barn-animals.mp4
 rm -f video.mp4 audio.wav
 echo "done: $(pwd)/barn-animals.mp4"
