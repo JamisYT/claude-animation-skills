@@ -1,0 +1,19 @@
+{
+ "intro": 2.423,
+ "cow_is": 0.794,
+ "cow_says": 0.886,
+ "cow_snd": 0.755,
+ "pig_is": 0.764,
+ "pig_says": 0.87,
+ "pig_snd": 0.794,
+ "duck_is": 0.741,
+ "duck_says": 0.871,
+ "duck_snd": 0.833,
+ "sheep_is": 0.783,
+ "sheep_says": 0.946,
+ "sheep_snd": 0.797,
+ "dog_is": 0.773,
+ "dog_says": 0.948,
+ "dog_snd": 0.843,
+ "bye": 2.011
+}

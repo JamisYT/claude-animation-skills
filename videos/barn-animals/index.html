@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<style>
+@font-face{font-family:'IT';src:url(/kit/fonts/inter-tight-latin-800-normal.woff2) format('woff2')}
+@font-face{font-family:'I7';src:url(/kit/fonts/inter-700-normal.woff2) format('woff2')}
+@font-face{font-family:'I6';src:url(/kit/fonts/inter-600-normal.woff2) format('woff2')}
+html,body{margin:0;background:#000;width:1080px;height:1920px;overflow:hidden}
+canvas{display:block;position:absolute;left:0;top:0}
+</style>
+<script type="importmap">{"imports":{"three":"/kit/node_modules/three/build/three.module.js"}}</script>
+</head>
+<body>
+<canvas id="gl" width="1080" height="1920" style="visibility:hidden"></canvas>
+<canvas id="c" width="1080" height="1920"></canvas>
+<script type="module">
+// Who's in the barn? A gentle 3D farm-animal sounds video for little kids. render(t) draws frame t.
+import * as THREE from 'three';
+const W = 1080, H = 1920;
+await Promise.all(['IT', 'I7', 'I6'].map(f => document.fonts.load(`40px ${f}`)));
+
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const prog = (t, a, b) => clamp((t - a) / (b - a));
+const eo = t => 1 - Math.pow(1 - t, 3);
+const ei = t => t * t * t;
+const eio = t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+const eob = t => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); };
+const pulse = (t, t0, d) => Math.sin(Math.PI * prog(t, t0, t0 + d));
+function rand(i) { const x = Math.sin(i * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); }
+function keys(list) {           // [[t, value or array], ...] eased between keys
+  return t => {
+    if (t <= list[0][0]) return list[0][1];
+    for (let i = 1; i < list.length; i++) if (t <= list[i][0]) {
+      const [t0, a] = list[i - 1], [t1, b] = list[i], k = eio(prog(t, t0, t1));
+      return Array.isArray(a) ? a.map((v, j) => lerp(v, b[j], k)) : lerp(a, b, k);
+    }
+    return list[list.length - 1][1];
+  };
+}
+
+
+// ------------------------------------------------------------------ timeline from the voices
+const VO = await (await fetch('vo/vo.json')).json();
+const KINDS = ['cow', 'pig', 'duck', 'sheep', 'dog'];
+const SOUND = { cow: 'MOO!', pig: 'OINK!', duck: 'QUACK!', sheep: 'BAA!', dog: 'WOOF!' };
+const NAME = { cow: 'COW', pig: 'PIG', duck: 'DUCK', sheep: 'SHEEP', dog: 'PUPPY' };
+const COLOR = { cow: '#3A86FF', pig: '#FF5DA2', duck: '#FFB703', sheep: '#8338EC', dog: '#FB5607' };
+const EVENTS = []; const ev = (t, type, gain = 1, id) => EVENTS.push({ t: +t.toFixed(3), type, gain, id });
+const INTRO = { a: 0, vo: .5 };
+INTRO.b = INTRO.vo + VO.intro + .6;
+let acc = INTRO.b;
+const BEAT = {};
+for (const k of KINDS) {
+  const s = { a: acc }; s.knock = acc; s.open = acc + .7; s.out0 = acc + 1.0; s.out1 = acc + 1.9;
+  s.is = acc + 1.95; s.says = s.is + VO[`${k}_is`] + .35; s.snd = s.says + VO[`${k}_says`] + .3; s.sndEnd = s.snd + VO[`${k}_snd`];
+  s.walk0 = s.sndEnd + .7; s.walk1 = s.walk0 + 1.1; s.close = s.walk0 + .2; s.b = s.walk0 + .55;
+  BEAT[k] = s; acc = s.b;
+}
+const FIN = { a: BEAT.dog.walk1 + .1 }; FIN.vo = FIN.a + .6; FIN.sub = FIN.vo + VO.bye + .5; FIN.b = FIN.sub + 2.6;
+const TOTAL = FIN.b;
+ev(INTRO.vo, 'vo', 1, 'intro');
+for (const k of KINDS) { const s = BEAT[k]; ev(s.knock, 'knock'); ev(s.knock + .3, 'knock'); ev(s.open, 'creak'); ev(s.open + .1, 'sparkle'); [0, .3, .6].forEach(h => ev(s.out0 + h, 'hop', .7)); ev(s.is, 'vo', 1, `${k}_is`); ev(s.is, 'pop', .6); ev(s.says, 'vo', 1, `${k}_says`); ev(s.snd, 'vo', 1, `${k}_snd`); ev(s.snd, 'pop', .5); ev(s.close, 'creak', .6); ev(s.walk0, 'patter', .6); }
+ev(FIN.a, 'chimes'); ev(FIN.a + .1, 'confetti'); ev(FIN.vo, 'vo', 1, 'bye'); ev(FIN.sub, 'pop'); ev(FIN.sub + .95, 'click');
+EVENTS.sort((a, b) => a.t - b.t);
+
+// ------------------------------------------------------------------ world
+const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gl'), antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(W, H, false); renderer.setPixelRatio(1);
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+const scene = new THREE.Scene();
+const cam = new THREE.PerspectiveCamera(50, W / H, .1, 400);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x9fd27a, 2.1));
+const sun = new THREE.DirectionalLight(0xfff1d6, 2.4); sun.position.set(-8, 18, 14); sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -14, right: 14, top: 14, bottom: -14, near: 1, far: 60 }); sun.shadow.bias = -.0006; scene.add(sun);
+const std = (color, o = {}) => new THREE.MeshStandardMaterial({ color, roughness: .55, ...o });
+function canvasTex(w, h, draw) { const c = document.createElement('canvas'); c.width = w; c.height = h; draw(c.getContext('2d'), w, h); const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t; }
+function mesh(geo, mat, x = 0, y = 0, z = 0, parent = scene) { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = true; parent.add(m); return m; }
+const sph = (r, mat, x, y, z, p, sx = 1, sy = 1, sz = 1) => { const m = mesh(new THREE.SphereGeometry(r, 28, 20), mat, x, y, z, p); m.scale.set(sx, sy, sz); return m; };
+scene.background = canvasTex(4, 512, (g) => { const gr = g.createLinearGradient(0, 0, 0, 512); gr.addColorStop(0, '#5BB8FF'); gr.addColorStop(.7, '#BDE6FF'); gr.addColorStop(1, '#F2FBFF'); g.fillStyle = gr; g.fillRect(0, 0, 4, 512); });
+scene.fog = new THREE.Fog(0xDFF3FF, 40, 110);
+{
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(300, 300), std(0x7FD45A, { roughness: .95 })); ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+  [[-26, -40, 16, 0x6CC64B], [10, -46, 20, 0x74CF52], [34, -38, 14, 0x63BD45], [-6, -60, 22, 0x86D965]].forEach(([x, z, r, c]) => sph(r, std(c, { roughness: 1 }), x, -r * .45, z, scene));
+  // dirt path
+  const path = new THREE.Mesh(new THREE.CircleGeometry(4.2, 40), std(0xE9C98B, { roughness: 1 })); path.rotation.x = -Math.PI / 2; path.scale.set(1, 1.5, 1); path.position.set(0, .02, 3); path.receiveShadow = true; scene.add(path);
+  // flowers
+  for (let i = 0; i < 40; i++) {
+    const x = (rand(i) - .5) * 22, z = -2 + rand(i + 5) * 9; if (Math.abs(x) < 4.6 && z > -1) continue;
+    mesh(new THREE.CylinderGeometry(.03, .03, .4, 5), std(0x3E9B3E), x, .2, z);
+    sph(.13, std([0xFF5DA2, 0xFFD23F, 0xFFFFFF, 0x8E7DFF][i % 4], { emissive: 0x111111 }), x, .45, z, scene);
+  }
+  // fence
+  for (const side of [-1, 1]) for (let i = 0; i < 6; i++) {
+    const x = side * (5.2 + i * 1.6); mesh(new THREE.BoxGeometry(.25, 1.4, .25), std(0xFFFFFF), x, .7, -2.8);
+    if (i < 5) { mesh(new THREE.BoxGeometry(1.6, .18, .12), std(0xFFFFFF), x + side * .8, 1.0, -2.8); mesh(new THREE.BoxGeometry(1.6, .18, .12), std(0xFFFFFF), x + side * .8, .55, -2.8); }
+  }
+  // tree
+  mesh(new THREE.CylinderGeometry(.35, .45, 3, 10), std(0x8B5A2B), 7.5, 1.5, -5);
+  [[7.5, 4, -5, 1.8], [6.4, 3.4, -4.6, 1.3], [8.6, 3.5, -5.2, 1.3], [7.4, 5, -5.4, 1.2]].forEach(([x, y, z, r]) => sph(r, std(0x3FAE4A), x, y, z, scene));
+  [[7, 3.8, -3.4], [8.2, 4.4, -3.7], [6.6, 4.8, -4]].forEach(([x, y, z]) => sph(.22, std(0xFF3B3B, { roughness: .3 }), x, y, z, scene));
+}
+// clouds and the smiling sun
+const clouds = [...Array(6)].map((_, i) => { const g = new THREE.Group(); for (let k = 0; k < 4; k++) sph(1.2 + rand(i * 4 + k) * .8, std(0xffffff, { roughness: 1 }), k * 1.5 - 2.2, rand(i + k) * .6, 0, g); g.position.set(-24 + i * 9, 13 + rand(i) * 6, -30 - rand(i + 2) * 10); scene.add(g); return g; });
+const sunG = new THREE.Group(); sunG.position.set(-6.5, 15, -25); scene.add(sunG);
+sph(2.6, new THREE.MeshBasicMaterial({ color: 0xFFD93D }), 0, 0, 0, sunG);
+{ const f = new THREE.Mesh(new THREE.PlaneGeometry(3.6, 3.6), new THREE.MeshBasicMaterial({ transparent: true, map: canvasTex(256, 256, (g) => {
+  g.fillStyle = '#3A2A10'; g.beginPath(); g.ellipse(88, 110, 14, 20, 0, 0, 7); g.ellipse(168, 110, 14, 20, 0, 0, 7); g.fill();
+  g.strokeStyle = '#3A2A10'; g.lineWidth = 12; g.lineCap = 'round'; g.beginPath(); g.arc(128, 140, 46, .2 * Math.PI, .8 * Math.PI); g.stroke();
+  g.fillStyle = 'rgba(255,120,120,0.55)'; g.beginPath(); g.ellipse(64, 158, 20, 12, 0, 0, 7); g.ellipse(192, 158, 20, 12, 0, 0, 7); g.fill(); }) })); f.position.z = 2.62; sunG.add(f); }
+const rays = new THREE.Group(); sunG.add(rays);
+for (let i = 0; i < 12; i++) { const r = mesh(new THREE.ConeGeometry(.35, 1.2, 4), new THREE.MeshBasicMaterial({ color: 0xFFC300 }), Math.cos(i / 12 * Math.PI * 2) * 3.4, Math.sin(i / 12 * Math.PI * 2) * 3.4, -.2, rays); r.rotation.z = i / 12 * Math.PI * 2 - Math.PI / 2; }
+
+// the barn
+const doors = [];
+{
+  const red = std(0xD7263D), white = std(0xFFFFFF), roofM = std(0x7A2B2B);
+  mesh(new THREE.BoxGeometry(6.4, 4.4, 5), red, 0, 2.2, -3.2);
+  const roofShape = new THREE.Shape(); roofShape.moveTo(-3.7, 0); roofShape.lineTo(0, 2.6); roofShape.lineTo(3.7, 0); roofShape.closePath();
+  const roof = mesh(new THREE.ExtrudeGeometry(roofShape, { depth: 5.6, bevelEnabled: false }), roofM, 0, 4.4, -6.0);
+  const gable = new THREE.Shape(); gable.moveTo(-3.2, 0); gable.lineTo(0, 2.3); gable.lineTo(3.2, 0); gable.closePath();
+  mesh(new THREE.ExtrudeGeometry(gable, { depth: .1, bevelEnabled: false }), red, 0, 4.4, -.75);
+  const loft = mesh(new THREE.CircleGeometry(.55, 24), white, 0, 5.25, -.62); const loftIn = mesh(new THREE.CircleGeometry(.42, 24), std(0x3A1A10), 0, 5.25, -.6);
+  [[-3.2, 2.2], [3.2, 2.2]].forEach(([x, y]) => mesh(new THREE.BoxGeometry(.25, 4.4, .2), white, x, y, -.62));
+  mesh(new THREE.BoxGeometry(6.6, .25, .2), white, 0, 4.4, -.62);
+  mesh(new THREE.BoxGeometry(2.8, 3.0, .3), std(0x26120A), 0, 1.5, -.75);       // dark doorway
+  for (const s of [-1, 1]) {
+    const hinge = new THREE.Group(); hinge.position.set(s * 1.4, 0, -.5); scene.add(hinge);
+    const d = new THREE.Group(); hinge.add(d);
+    mesh(new THREE.BoxGeometry(1.4, 3.0, .18), red, -s * .7, 1.5, 0, d);
+    mesh(new THREE.BoxGeometry(1.4, .16, .2), white, -s * .7, 2.95, .02, d); mesh(new THREE.BoxGeometry(1.4, .16, .2), white, -s * .7, .08, .02, d);
+    mesh(new THREE.BoxGeometry(.16, 3.0, .2), white, -s * .08, 1.5, .02, d); mesh(new THREE.BoxGeometry(.16, 3.0, .2), white, -s * 1.32, 1.5, .02, d);
+    const x1 = mesh(new THREE.BoxGeometry(.14, 3.2, .2), white, -s * .7, 1.5, .04, d); x1.rotation.z = .42 * s;
+    const x2 = mesh(new THREE.BoxGeometry(.14, 3.2, .2), white, -s * .7, 1.5, .04, d); x2.rotation.z = -.42 * s;
+    doors.push({ hinge, s });
+  }
+}
+
+// ------------------------------------------------------------------ the animals (cute toy style, facing +z)
+function eyes(p, y, z, gap, r = .17) {
+  for (const s of [-1, 1]) {
+    sph(r, std(0xffffff, { roughness: .2 }), s * gap, y, z, p);
+    sph(r * .58, std(0x161616, { roughness: .2 }), s * gap, y - r * .05, z + r * .62, p);
+    sph(r * .2, new THREE.MeshBasicMaterial({ color: 0xffffff }), s * gap - r * .12, y + r * .2, z + r * .95, p);
+  }
+}
+function cheeks(p, y, z, gap) { for (const s of [-1, 1]) { const c = mesh(new THREE.CircleGeometry(.12, 16), new THREE.MeshBasicMaterial({ color: 0xFF8FB1, transparent: true, opacity: .7 }), s * gap, y, z, p); c.rotation.y = s * .5; } }
+function legs4(g, mat, hoof, xs, zs, len, r) {
+  const out = [];
+  for (const x of xs) for (const z of zs) { const p = new THREE.Group(); p.position.set(x, len, z); g.add(p); mesh(new THREE.CylinderGeometry(r, r * .9, len, 12), mat, 0, -len / 2, 0, p); if (hoof) mesh(new THREE.CylinderGeometry(r * 1.05, r * 1.1, .14, 12), hoof, 0, -len + .07, 0, p); out.push(p); }
+  return out;
+}
+function rig(g, head, mouth, legs, tail, extra = {}) { return { g, head, mouth, legs, tail, ...extra }; }
+function makeCow() {
+  const g = new THREE.Group(), spots = std(0xffffff, { map: canvasTex(512, 256, (c) => { c.fillStyle = '#FFFFFF'; c.fillRect(0, 0, 512, 256); c.fillStyle = '#222'; [[80, 90, 50], [230, 160, 60], [380, 70, 45], [460, 190, 40], [150, 220, 30]].forEach(([x, y, r]) => { c.beginPath(); c.ellipse(x, y, r * 1.3, r, .4, 0, 7); c.fill(); }); }) });
+  sph(1, spots, 0, 1.45, 0, g, .95, .8, 1.25);
+  const legs = legs4(g, std(0xffffff), std(0x3A2A2A), [-.45, .45], [-.65, .65], .85, .17);
+  const head = new THREE.Group(); head.position.set(0, 1.9, 1.05); g.add(head);
+  sph(.66, std(0xffffff), 0, .1, 0, head, 1, .95, .95);
+  sph(.5, std(0xFFB3C6), 0, -.25, .45, head, 1.15, .72, .8);
+  for (const s of [-1, 1]) { sph(.07, std(0x7A3A4A), s * .17, -.2, .82, head); const ear = sph(.24, std(0xFFFFFF), s * .72, .25, -.05, head, 1.3, .6, .5); ear.rotation.z = s * -.4; const horn = mesh(new THREE.ConeGeometry(.08, .32, 10), std(0xFFF1C9), s * .32, .72, -.05, head); horn.rotation.z = -s * .4; }
+  const mouth = sph(.2, std(0x6A1A2A), 0, -.48, .7, head, 1.2, .2, .6);
+  eyes(head, .28, .5, .26); cheeks(head, -.05, .66, .5);
+  sph(.14, std(0xFFD23F, { metalness: .4, roughness: .3 }), 0, -.62, .25, head);
+  const tail = new THREE.Group(); tail.position.set(0, 1.6, -1.2); g.add(tail); mesh(new THREE.CylinderGeometry(.04, .04, .8, 6), std(0xffffff), 0, -.4, -.05, tail); sph(.1, std(0x222222), 0, -.82, -.05, tail);
+  return rig(g, head, mouth, legs, tail);
+}
+function makePig() {
+  const g = new THREE.Group(), pink = std(0xFFA6C9), dpink = std(0xF0789F);
+  sph(1, pink, 0, 1.15, 0, g, .9, .78, 1.1);
+  const legs = legs4(g, pink, dpink, [-.42, .42], [-.55, .55], .6, .17);
+  const head = new THREE.Group(); head.position.set(0, 1.6, .95); g.add(head);
+  sph(.64, pink, 0, .05, 0, head);
+  const sn = mesh(new THREE.CylinderGeometry(.26, .28, .22, 24), dpink, 0, -.08, .62, head); sn.rotation.x = Math.PI / 2;
+  for (const s of [-1, 1]) { sph(.06, std(0x7A2A40), s * .1, -.08, .74, head); const e = mesh(new THREE.ConeGeometry(.2, .42, 4), pink, s * .4, .6, .05, head); e.rotation.set(.3, 0, -s * .5); }
+  const mouth = sph(.16, std(0x6A1A2A), 0, -.38, .55, head, 1.3, .2, .6);
+  eyes(head, .24, .5, .24, .15); cheeks(head, -.08, .62, .44);
+  const tail = new THREE.Group(); tail.position.set(0, 1.3, -1.05); g.add(tail);
+  const pts = []; for (let i = 0; i <= 30; i++) { const a = i / 30 * Math.PI * 3.5; pts.push(new THREE.Vector3(Math.cos(a) * .14, Math.sin(a) * .14, -i * .012)); }
+  mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 40, .04, 6), dpink, 0, 0, 0, tail);
+  return rig(g, head, mouth, legs, tail);
+}
+function makeDuck() {
+  const g = new THREE.Group(), yel = std(0xFFD93D), org = std(0xFF9F1C);
+  sph(1, yel, 0, .95, 0, g, .72, .66, .9);
+  const legs = []; for (const s of [-1, 1]) { const p = new THREE.Group(); p.position.set(s * .3, .45, .1); g.add(p); mesh(new THREE.CylinderGeometry(.06, .06, .4, 8), org, 0, -.2, 0, p); mesh(new THREE.BoxGeometry(.34, .06, .42), org, 0, -.42, .12, p); legs.push(p); }
+  const head = new THREE.Group(); head.position.set(0, 1.65, .4); g.add(head);
+  sph(.5, yel, 0, .1, 0, head);
+  sph(.3, org, 0, -.02, .46, head, 1.1, .32, 1.0);
+  const jaw = new THREE.Group(); jaw.position.set(0, -.08, .3); head.add(jaw); sph(.26, std(0xF28A00), 0, -.04, .16, jaw, 1.05, .26, .95);
+  for (const s of [-1, 1]) { const w = sph(.42, yel, s * .66, .95, -.05, g, .35, .7, .9); w.rotation.z = s * .3; }
+  [[0, .62, -.05], [.08, .66, -.1], [-.08, .66, -.1]].forEach(([x, y, z]) => sph(.09, yel, x, y, z, head));
+  eyes(head, .26, .36, .2, .13); cheeks(head, .02, .46, .34);
+  const tail = new THREE.Group(); tail.position.set(0, 1.05, -.85); g.add(tail); const tl = mesh(new THREE.ConeGeometry(.2, .45, 8), yel, 0, .1, 0, tail); tl.rotation.x = -.9;
+  return rig(g, head, jaw, legs, tail, { duck: true });
+}
+function makeSheep() {
+  const g = new THREE.Group(), wool = std(0xFFFFFF, { roughness: .9 }), dark = std(0x3B3B48);
+  const legs = legs4(g, dark, null, [-.4, .4], [-.5, .5], .75, .11);
+  for (let i = 0; i < 22; i++) { const a = rand(i) * Math.PI * 2, b = rand(i + 9) * Math.PI; sph(.45 + rand(i + 4) * .15, wool, Math.cos(a) * Math.sin(b) * .75, 1.4 + Math.cos(b) * .5, Math.sin(a) * Math.sin(b) * .95, g); }
+  const head = new THREE.Group(); head.position.set(0, 1.85, .95); g.add(head);
+  sph(.48, dark, 0, -.05, .05, head, .95, 1.1, .95);
+  [[0, .46, -.05], [.2, .42, -.08], [-.2, .42, -.08], [0, .38, .14]].forEach(([x, y, z]) => sph(.2, wool, x, y, z, head));
+  for (const s of [-1, 1]) { const e = sph(.18, dark, s * .52, .1, -.05, head, 1.4, .55, .6); e.rotation.z = s * .35; }
+  const mouth = sph(.13, std(0x8A2A3A), 0, -.36, .42, head, 1.2, .2, .6);
+  eyes(head, .14, .38, .2, .14); cheeks(head, -.12, .45, .34);
+  const tail = new THREE.Group(); tail.position.set(0, 1.5, -1.0); g.add(tail); sph(.22, wool, 0, 0, 0, tail);
+  return rig(g, head, mouth, legs, tail);
+}
+function makeDog() {
+  const g = new THREE.Group(), tan = std(0xD9A066), light = std(0xF2D2A9), brown = std(0x7A4A24);
+  sph(1, tan, 0, 1.1, 0, g, .78, .72, 1.0);
+  const legs = legs4(g, tan, light, [-.38, .38], [-.5, .5], .6, .15);
+  const head = new THREE.Group(); head.position.set(0, 1.62, .85); g.add(head);
+  sph(.6, tan, 0, .08, 0, head);
+  sph(.32, light, 0, -.12, .45, head, 1.05, .8, .9);
+  sph(.11, std(0x161616, { roughness: .2 }), 0, -.02, .74, head, 1.3, 1, 1);
+  const ears = []; for (const s of [-1, 1]) { const ep = new THREE.Group(); ep.position.set(s * .5, .35, -.02); head.add(ep); sph(.24, brown, 0, -.3, 0, ep, .6, 1.3, .5); ears.push(ep); }
+  const mouth = sph(.14, std(0x6A1A2A), 0, -.38, .55, head, 1.3, .2, .6);
+  const tongue = sph(.1, std(0xFF7A90), 0, -.46, .6, head, 1, .5, .8);
+  eyes(head, .26, .46, .24, .15); cheeks(head, -.02, .56, .42);
+  const col = mesh(new THREE.TorusGeometry(.48, .07, 8, 24), std(0xE63946), 0, 1.42, .72, g); col.rotation.x = Math.PI / 2 - .4;
+  sph(.09, std(0xFFD23F, { metalness: .4 }), 0, 1.2, 1.12, g);
+  const tail = new THREE.Group(); tail.position.set(0, 1.35, -.95); g.add(tail); const tl = mesh(new THREE.CylinderGeometry(.06, .09, .6, 8), tan, 0, .26, -.08, tail); tl.rotation.x = -.5;
+  return rig(g, head, mouth, legs, tail, { ears, tongue });
+}
+const MAKE = { cow: makeCow, pig: makePig, duck: makeDuck, sheep: makeSheep, dog: makeDog };
+const AN = Object.fromEntries(KINDS.map(k => { const r = MAKE[k](); scene.add(r.g); r.g.visible = false; r.mouth0 = r.mouth.scale.clone(); return [k, r]; }));
+const SLOT = { cow: [-2.9, 1.5, .5], pig: [2.9, 1.5, -.5], duck: [-1.7, 3.3, .45], sheep: [1.8, 3.3, -.45], dog: [0, 4.6, 0] };
+const STAGE = [0, 4.6];
+
+// ------------------------------------------------------------------ choreography
+function talking(t, k) { const s = BEAT[k], d = VO[`${k}_snd`]; if (t < s.snd || t > s.sndEnd) return 0; const u = (t - s.snd) / d; return Math.max(0, Math.sin(u * Math.PI * 2 * 2)) ** .7; }
+function animalState(t, k) {
+  const s = BEAT[k], st = { vis: t >= s.open, x: 0, z: -1.6, y: 0, ry: 0, legs: 0, mouth: 0, tilt: 0, sq: 0 };
+  if (!st.vis) return st;
+  const breathe = Math.sin(t * 3 + KINDS.indexOf(k)) * .02;
+  if (t < s.out0) { st.z = -1.6; st.sc = eob(prog(t, s.open, s.open + .3)); }
+  else if (t < s.out1) { const u = prog(t, s.out0, s.out1); st.z = lerp(-1.6, STAGE[1], u); st.y = Math.abs(Math.sin(u * Math.PI * 3)) * .7; st.legs = Math.sin(u * Math.PI * 6) * .5; }
+  else if (t < s.walk0) {
+    st.x = 0; st.z = STAGE[1]; st.y = .25 * pulse(t, s.is - .05, .35) + .2 * pulse(t, s.says + .3, .3);
+    st.mouth = talking(t, k); st.tilt = -.25 * st.mouth; st.y += .35 * st.mouth; st.sq = .06 * Math.sin(t * 20) * st.mouth;
+    st.ry = Math.sin((t - s.out1) * 1.3) * .18;
+  } else if (t < s.walk1) {
+    const u = eio(prog(t, s.walk0, s.walk1)), sl = SLOT[k]; st.x = lerp(0, sl[0], u); st.z = lerp(STAGE[1], sl[1], u); st.ry = Math.atan2(sl[0], sl[1] - STAGE[1]) * (1 - u) + sl[2] * u;
+    st.legs = Math.sin(t * 16) * .5; st.y = Math.abs(Math.sin(t * 16)) * .12;
+  } else { const sl = SLOT[k]; st.x = sl[0]; st.z = sl[1]; st.ry = sl[2] + Math.sin(t * 1.5 + sl[0]) * .1; st.y = Math.abs(Math.sin(t * 2.4 + sl[0])) * .06; }
+  // join in when a friend speaks, dance at the end
+  if (t > FIN.a) { const ph = (t - FIN.a) * 6.2 + KINDS.indexOf(k) * .7; st.y = Math.abs(Math.sin(ph)) * .55; st.ry = (SLOT[k][2]) * .5 + Math.sin(ph * .5) * .35; st.legs = Math.sin(ph) * .4; st.tilt = Math.sin(ph) * .12; }
+  if (t > FIN.vo && t < FIN.vo + VO.bye) st.mouth = Math.max(st.mouth, .4 * Math.max(0, Math.sin((t - FIN.vo) * 11)));
+  st.breathe = breathe;
+  return st;
+}
+function applyAnimal(k, st, t) {
+  const a = AN[k]; a.g.visible = st.vis; if (!st.vis) return;
+  const sc = st.sc ?? 1; a.g.position.set(st.x, st.y, st.z); a.g.rotation.set(0, st.ry, 0);
+  a.g.scale.set(sc * (1 + st.sq), sc * (1 - st.sq + st.breathe), sc * (1 + st.sq));
+  a.legs.forEach((l, i) => { l.rotation.x = (i % 2 ? 1 : -1) * st.legs; });
+  a.head.rotation.set(st.tilt, 0, Math.sin(t * 2 + k.length) * .05);
+  if (a.duck) a.mouth.rotation.x = .55 * st.mouth; else a.mouth.scale.set(a.mouth0.x, a.mouth0.y * (1 + 4.5 * st.mouth), a.mouth0.z);
+  a.tail.rotation.set(0, Math.sin(t * (k === 'dog' ? 18 : 4)) * (k === 'dog' ? .7 : .3), 0);
+  if (a.ears) a.ears.forEach((e, i) => { e.rotation.z = (i ? -1 : 1) * Math.sin(t * 6) * .15; });
+  if (a.tongue) a.tongue.visible = st.mouth > .2;
+}
+function doorAngle(t) {
+  let a = 0;
+  for (const k of KINDS) { const s = BEAT[k]; const knockW = (t > s.knock - .05 && t < s.knock + .5) ? .05 * Math.sin((t - s.knock) * 60) : 0; a = Math.max(a, eob(prog(t, s.open, s.open + .45)) * (1 - eio(prog(t, s.close, s.close + .45))) * 1.9 + knockW); }
+  return a;
+}
+const camKeys = (() => {
+  const W0 = [0, 3.8, 15.5, 0, 2.7], CL = [0, 2.6, 11, 0, 1.4 + 0], list = [[0, [0, 6, 24, 0, 3.2]], [INTRO.b - .4, W0]];
+  for (const k of KINDS) { const s = BEAT[k]; list.push([s.out1 - .2, W0], [s.is + .3, [0, 2.8, 11.5, 0, 1.6]], [s.walk0, [0, 2.8, 11.5, 0, 1.6]], [s.walk1 - .2, W0]); }
+  list.push([FIN.a, W0], [FIN.a + 1.5, [0, 3.2, 14, 0, 2.3]]);
+  return list;
+})();
+function camAt(t) {
+  if (t <= camKeys[0][0]) return camKeys[0][1];
+  for (let i = 1; i < camKeys.length; i++) if (t <= camKeys[i][0]) { const [t0, a] = camKeys[i - 1], [t1, b] = camKeys[i]; const k = eio(prog(t, t0, t1)); return a.map((v, j) => lerp(v, b[j], k)); }
+  return camKeys[camKeys.length - 1][1];
+}
+
+// ------------------------------------------------------------------ 2D overlay
+const C = document.getElementById('c'), X = C.getContext('2d');
+const v3 = new THREE.Vector3();
+const toScreen = (x, y, z) => { v3.set(x, y, z).project(cam); return [(v3.x + 1) / 2 * W, (1 - v3.y) / 2 * H]; };
+function rr(x, y, w, h, r) { X.beginPath(); X.roundRect(x, y, w, h, r); }
+function outlined(s, x, y, size, fill, { stroke = 16, f = 'IT', col = '#3A2350' } = {}) { X.font = `${size}px ${f}`; X.textAlign = 'center'; X.textBaseline = 'middle'; X.lineJoin = 'round'; X.lineWidth = stroke; X.strokeStyle = col; X.strokeText(s, x, y); X.fillStyle = fill; X.fillText(s, x, y); }
+const RAINBOW = ['#FF595E', '#FFCA3A', '#8AC926', '#1982C4', '#6A4C93', '#FF8FAB'];
+function rainbowWord(s, cx, y, size, t0, t, out = 0) {
+  X.font = `${size}px IT`; const ws = [...s].map(ch => X.measureText(ch).width); const total = ws.reduce((a, b) => a + b, 0) + (s.length - 1) * 6;
+  let x = cx - total / 2;
+  [...s].forEach((ch, i) => { const k = prog(t, t0 + i * .06, t0 + i * .06 + .3); if (k > 0 && out < 1) { X.save(); X.globalAlpha = 1 - out; X.translate(x + ws[i] / 2, y + Math.sin(t * 5 + i) * 8); const sc = eob(k); X.scale(sc, sc); outlined(ch, 0, 0, size, RAINBOW[i % RAINBOW.length], { stroke: size * .2 }); X.restore(); } x += ws[i] + 6; });
+}
+function title(t) {
+  const out = prog(t, INTRO.b - .5, INTRO.b - .1); if (out >= 1) return;
+  X.save(); X.globalAlpha = 1 - out;
+  rainbowWord("WHO'S IN", W / 2, 360, 110, .2, t); rainbowWord('THE BARN?', W / 2, 490, 120, .55, t);
+  X.restore();
+}
+function nameCard(t) {
+  for (const k of KINDS) {
+    const s = BEAT[k]; if (t < s.is - .05 || t > s.walk0 + .2) continue;
+    const out = prog(t, s.walk0 - .1, s.walk0 + .2);
+    rainbowWord(NAME[k], W / 2, 380, 150, s.is - .05, t, out);
+  }
+}
+function soundBubble(t) {
+  for (const k of KINDS) {
+    const s = BEAT[k]; if (t < s.snd - .05 || t > s.sndEnd + .7) continue;
+    const kk = prog(t, s.snd - .05, s.snd + .2), out = prog(t, s.sndEnd + .4, s.sndEnd + .7);
+    const p = toScreen(0, 3.3, STAGE[1]);
+    X.save(); X.globalAlpha = 1 - out; X.translate(W / 2 + 170, 720); X.rotate(-.06 + Math.sin(t * 8) * .03); const sc = eob(kk) * (1 + .06 * talking(t, k)); X.scale(sc, sc);
+    X.fillStyle = '#FFFFFF'; X.beginPath(); [[-150, 0, 120], [0, -40, 130], [150, 0, 120], [-70, 60, 100], [80, 60, 100]].forEach(([x, y, r]) => { X.moveTo(x + r, y); X.arc(x, y, r, 0, 7); }); X.fill();
+    X.beginPath(); X.moveTo(-170, 120); X.lineTo(-250, 230); X.lineTo(-90, 140); X.fill();
+    outlined(SOUND[k], 0, 10, SOUND[k].length > 5 ? 100 : 124, COLOR[k], { stroke: 16 });
+    X.restore();
+  }
+}
+const CONF = [...Array(140)].map((_, i) => ({ x: rand(i) * W, v: 300 + rand(i + 1) * 400, d: rand(i + 2) * 2, r: rand(i + 3) * 6, s: 16 + rand(i + 4) * 16, c: RAINBOW[i % 6], sw: rand(i + 5) * 3 }));
+function confetti(t) {
+  const tt = t - FIN.a; if (tt < 0) return;
+  CONF.forEach(p => { const u = (tt + p.d) % 5; const y = -40 + u * p.v * .6, x = p.x + Math.sin(u * 3 + p.sw) * 60; X.save(); X.translate(x, y); X.rotate(p.r + u * 4); X.scale(1, Math.cos(u * 6 + p.sw)); X.fillStyle = p.c; X.fillRect(-p.s / 2, -p.s * .3, p.s, p.s * .6); X.restore(); });
+}
+function bye(t) { const k = prog(t, FIN.vo - .1, FIN.vo + .3); if (k <= 0) return; rainbowWord('BYE BYE!', W / 2, 400, 150, FIN.vo - .1, t); }
+function cursor(x, y, press) {
+  X.save(); X.translate(x, y); const s = 1.3 * (1 - .15 * press); X.scale(s, s);
+  X.beginPath(); X.moveTo(0, 0); X.lineTo(0, 58); X.lineTo(15, 45); X.lineTo(27, 70); X.lineTo(38, 65); X.lineTo(27, 41); X.lineTo(46, 41); X.closePath();
+  X.fillStyle = '#fff'; X.fill(); X.strokeStyle = '#120D1F'; X.lineWidth = 4; X.lineJoin = 'round'; X.stroke(); X.restore();
+}
+function subscribe(t) {
+  const t0 = FIN.sub, k = prog(t, t0, t0 + .45); if (k <= 0) return;
+  const tap = t0 + 1.0, done = t >= tap, press = pulse(t, tap - .06, .16);
+  X.save(); X.globalAlpha = clamp(k * 2.5); X.translate(W / 2, 1420 + (1 - eo(k)) * 160); const s = lerp(.7, 1, eob(k)); X.scale(s, s);
+  X.shadowColor = 'rgba(0,0,0,0.35)'; X.shadowBlur = 40; X.shadowOffsetY = 12; rr(-400, -70, 800, 140, 70); X.fillStyle = '#FFFFFF'; X.fill(); X.shadowColor = 'transparent';
+  X.beginPath(); X.arc(-326, 0, 48, 0, 7); X.fillStyle = '#FFD93D'; X.fill();
+  X.fillStyle = '#3A2A10'; X.beginPath(); X.arc(-342, -8, 6, 0, 7); X.arc(-310, -8, 6, 0, 7); X.fill(); X.strokeStyle = '#3A2A10'; X.lineWidth = 5; X.lineCap = 'round'; X.beginPath(); X.arc(-326, 4, 16, .2 * Math.PI, .8 * Math.PI); X.stroke();
+  X.font = '36px I7'; X.fillStyle = '#0A0C11'; X.textAlign = 'left'; X.textBaseline = 'alphabetic'; X.fillText('Subscribe for more', -258, -6);
+  X.font = '24px I6'; X.fillStyle = '#6B7280'; X.fillText('new animal friends every week', -258, 30);
+  X.save(); X.translate(262, 0); const bs = 1 - .08 * press; X.scale(bs, bs); rr(-112, -40, 224, 80, 40); X.fillStyle = done ? '#E5E7EB' : '#FF0033'; X.fill();
+  X.font = (done ? 24 : 27) + 'px I7'; X.fillStyle = done ? '#4B5563' : '#FFFFFF'; X.textAlign = 'center'; X.textBaseline = 'middle'; X.fillText(done ? 'SUBSCRIBED' : 'SUBSCRIBE', 0, 2); X.restore();
+  if (done) { const r = prog(t, tap, tap + .5); X.beginPath(); X.arc(262, 0, 30 + 120 * eo(r), 0, 7); X.strokeStyle = `rgba(255,0,51,${.6 * (1 - r)})`; X.lineWidth = 6; X.stroke(); }
+  const m = eio(prog(t, t0 + .4, tap - .05)), out = eio(prog(t, tap + .35, tap + .8)); if (out < 1) cursor(lerp(420, 290, m) + out * 220, lerp(200, 22, m) + out * 160, press);
+  X.restore();
+}
+function sparkles(t) {
+  for (const k of KINDS) {
+    const s = BEAT[k], u = prog(t, s.open, s.open + .9); if (u <= 0 || u >= 1) continue;
+    const c = toScreen(0, 1.6, -.5);
+    for (let i = 0; i < 12; i++) { const a = i / 12 * Math.PI * 2, r = 60 + 260 * eo(u); X.save(); X.globalAlpha = 1 - u; X.translate(c[0] + Math.cos(a) * r, c[1] + Math.sin(a) * r * .8); X.rotate(u * 4 + i);
+      X.beginPath(); for (let j = 0; j < 8; j++) { const aa = j / 8 * Math.PI * 2, q = j % 2 ? 7 : 20; X.lineTo(Math.cos(aa) * q, Math.sin(aa) * q); } X.closePath(); X.fillStyle = RAINBOW[i % 6]; X.fill(); X.restore(); }
+  }
+}
+
+// ------------------------------------------------------------------ frame
+function render(t) {
+  for (const k of KINDS) applyAnimal(k, animalState(t, k), t);
+  const da = doorAngle(t); doors.forEach(d => { d.hinge.rotation.y = d.s * da; });
+  clouds.forEach((c, i) => { c.position.x = -24 + i * 9 + t * .4; });
+  rays.rotation.z = t * .3; sunG.position.y = 15 + Math.sin(t * 1.2) * .3;
+  const p = camAt(t); cam.position.set(p[0] + Math.sin(t * .4) * .3, p[1], p[2]); cam.lookAt(p[3], p[4], 0);
+  renderer.render(scene, cam);
+  X.setTransform(1, 0, 0, 1, 0, 0); X.globalAlpha = 1; X.drawImage(renderer.domElement, 0, 0);
+  sparkles(t); confetti(t);
+  title(t); nameCard(t); soundBubble(t); bye(t); subscribe(t);
+}
+window.render = render; window.TOTAL = TOTAL; window.EVENTS = EVENTS;
+window.SECTIONS = { fin: FIN.a, end: TOTAL, talk: KINDS.map(k => [BEAT[k].snd, BEAT[k].sndEnd]) };
+window.READY = true;
+
+</script>
+</body></html>
