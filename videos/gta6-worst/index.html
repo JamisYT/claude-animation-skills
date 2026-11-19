@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<style>
+@font-face{font-family:'IT';src:url(../../kit/fonts/inter-tight-latin-800-normal.woff2) format('woff2')}
+@font-face{font-family:'I7';src:url(../../kit/fonts/inter-700-normal.woff2) format('woff2')}
+@font-face{font-family:'I6';src:url(../../kit/fonts/inter-600-normal.woff2) format('woff2')}
+@font-face{font-family:'M';src:url(../../kit/fonts/jetbrains-mono-latin-500-normal.woff2) format('woff2')}
+html,body{margin:0;background:#000;width:1080px;height:1920px;overflow:hidden}
+canvas{display:block}
+</style></head>
+<body><canvas id="c" width="1080" height="1920"></canvas>
+<script>
+// "The worst things about GTA 6": a narrated countdown in a retro neon style (no game art). render(t) draws frame t.
+const W = 1080, H = 1920;
+const C = document.getElementById('c'), X = C.getContext('2d');
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const prog = (t, a, b) => clamp((t - a) / (b - a));
+const eo = t => 1 - Math.pow(1 - t, 3);
+const ei = t => t * t * t;
+const eio = t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+const eob = t => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); };
+const pulse = (t, t0, d) => Math.sin(Math.PI * prog(t, t0, t0 + d));
+function rand(i) { const x = Math.sin(i * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); }
+function rr(x, y, w, h, r) { X.beginPath(); X.roundRect(x, y, w, h, r); }
+function outlined(s, x, y, size, fill, { align = 'center', stroke = 14, f = 'IT', strokeCol = '#12051F', glow = null } = {}) {
+  X.font = `${size}px ${f}`; X.textAlign = align; X.textBaseline = 'middle'; X.lineJoin = 'round';
+  if (glow) { X.save(); X.shadowColor = glow; X.shadowBlur = 30; X.fillStyle = glow; X.fillText(s, x, y); X.restore(); }
+  X.lineWidth = stroke; X.strokeStyle = strokeCol; X.strokeText(s, x, y); X.fillStyle = fill; X.fillText(s, x, y);
+}
+function fit(s, size, maxW, f = 'IT') { X.font = `${size}px ${f}`; const w = X.measureText(s).width; return w > maxW ? size * maxW / w : size; }
+
+// ------------------------------------------------------------------ timeline from the voiceover
+const VO = window.VO || [6.8, 5.6, 4.7, 4.2, 7.2, 6.4, 6.7, 4.2];
+const CAPS = [
+  "GTA 6 just scored a 99 on Metacritic. But it's not perfect. Here are the worst things about it.",
+  "#6: The slow start. Reviewers say the opening takes its time before the fun kicks in.",
+  "#5: Cutscenes that interrupt the action, right in the middle of big heists.",
+  "#4: The combat. Several reviews call the gunplay clunky.",
+  "#3: The price. $79.99 for standard, and $99.99 for the Ultimate Edition.",
+  "#2: No PC version. It's console only, and a PC release hasn't even been announced.",
+  "And #1: 30 frames per second. Every console is locked to 30, even the PS5 Pro.",
+  "Was it worth the 13-year wait? Comment below, and subscribe for more!",
+];
+const LEAD = .2, TAIL = .32;
+const SC = []; let acc = 0;
+VO.forEach((d, i) => { const a = acc, v = a + LEAD; SC.push({ a, v, ve: v + d, b: v + d + TAIL, i }); acc = v + d + TAIL; });
+SC[SC.length - 1].b += 2.2; acc += 2.2;
+const TOTAL = acc;
+const wt = (i, word) => { const s = SC[i], txt = CAPS[i], k = txt.indexOf(word); return s.v + (s.ve - s.v) * clamp(k / txt.length); };
+const EVENTS = []; const ev = (t, type, gain = 1, idx) => EVENTS.push({ t: +t.toFixed(3), type, gain, idx });
+const ITEMS = [null,
+  { n: 6, title: 'SLOW START', col: '#3DF2FF', src: 'per early reviews' },
+  { n: 5, title: 'CUTSCENE INTERRUPTIONS', col: '#FF4FD8', src: 'per early reviews' },
+  { n: 4, title: 'CLUNKY COMBAT', col: '#FFE14D', src: 'per early reviews' },
+  { n: 3, title: 'THE PRICE', col: '#7CFF6B', src: 'official pricing' },
+  { n: 2, title: 'NO PC VERSION', col: '#B36BFF', src: 'PS5 + Xbox Series X|S only' },
+  { n: 1, title: 'LOCKED TO 30 FPS', col: '#FF3B5C', src: 'per early reviews' },
+];
+
+// ------------------------------------------------------------------ background: neon sunset, sun, moving grid, palms
+const HZ = 1060;
+function palm(x, y, s, flip) {
+  X.save(); X.translate(x, y); X.scale(flip ? -s : s, s); X.fillStyle = '#12051F'; X.strokeStyle = '#12051F';
+  X.lineWidth = 22; X.lineCap = 'round'; X.beginPath(); X.moveTo(0, 0); X.quadraticCurveTo(40, -260, 10, -520); X.stroke();
+  for (let i = 0; i < 7; i++) {
+    const a = -Math.PI / 2 + (i - 3) * .48, len = 200 + (i % 2) * 40;
+    X.beginPath(); X.moveTo(10, -520); X.quadraticCurveTo(10 + Math.cos(a) * len * .6, -520 + Math.sin(a) * len * .6 - 60, 10 + Math.cos(a) * len, -520 + Math.sin(a) * len * .4 + 60);
+    X.quadraticCurveTo(10 + Math.cos(a) * len * .55, -520 + Math.sin(a) * len * .5 - 20, 10, -520); X.fill();
+  }
+  X.restore();
+}
+function background(t, accent) {
+  const g = X.createLinearGradient(0, 0, 0, HZ); g.addColorStop(0, '#0E0626'); g.addColorStop(.45, '#3A0F5E'); g.addColorStop(.8, '#B8237A'); g.addColorStop(1, '#FF8A5B');
+  X.fillStyle = g; X.fillRect(0, 0, W, HZ);
+  for (let i = 0; i < 70; i++) { const x = rand(i) * W, y = rand(i + 9) * 700, a = .3 + .7 * Math.abs(Math.sin(t * 1.5 + i)); X.fillStyle = `rgba(255,255,255,${a * .7})`; X.fillRect(x, y, 3, 3); }
+  // sun with stripes
+  X.save(); X.beginPath(); X.arc(W / 2, HZ - 40, 300, Math.PI, 0); X.lineTo(W / 2 + 300, HZ); X.lineTo(W / 2 - 300, HZ); X.closePath(); X.clip();
+  const sg = X.createLinearGradient(0, HZ - 340, 0, HZ); sg.addColorStop(0, '#FFE66D'); sg.addColorStop(1, '#FF3C8E'); X.fillStyle = sg; X.fillRect(0, HZ - 340, W, 340);
+  X.fillStyle = '#B8237A'; for (let i = 0; i < 7; i++) { const y = HZ - 150 + i * 22 + (t * 18) % 22, h = 3 + i * 2.2; X.fillRect(0, y, W, h); }
+  X.restore();
+  // floor grid
+  const fg = X.createLinearGradient(0, HZ, 0, H); fg.addColorStop(0, '#2A0838'); fg.addColorStop(1, '#0B0418'); X.fillStyle = fg; X.fillRect(0, HZ, W, H - HZ);
+  X.strokeStyle = accent; X.globalAlpha = .55; X.lineWidth = 3;
+  for (let i = -14; i <= 14; i++) { X.beginPath(); X.moveTo(W / 2 + i * 40, HZ); X.lineTo(W / 2 + i * 420, H); X.stroke(); }
+  for (let i = 0; i < 14; i++) { const z = ((i + (t * 1.6) % 1) / 14); const y = HZ + Math.pow(z, 2.2) * (H - HZ); X.globalAlpha = .55 * z + .1; X.beginPath(); X.moveTo(0, y); X.lineTo(W, y); X.stroke(); }
+  X.globalAlpha = 1;
+  const hg = X.createLinearGradient(0, HZ - 30, 0, HZ + 30); hg.addColorStop(0, 'rgba(255,120,200,0)'); hg.addColorStop(.5, 'rgba(255,170,220,0.9)'); hg.addColorStop(1, 'rgba(255,120,200,0)'); X.fillStyle = hg; X.fillRect(0, HZ - 30, W, 60);
+  palm(70, HZ + 40, 1.0 + Math.sin(t) * .01, false); palm(1010, HZ + 60, .85, true);
+}
+
+// ------------------------------------------------------------------ shared pieces
+function panel(col, k) {
+  X.save(); X.globalAlpha = clamp(k * 1.5); const s = lerp(.85, 1, eob(k)); X.translate(W / 2, 930); X.scale(s, s);
+  rr(-440, -330, 880, 660, 40); X.fillStyle = 'rgba(14,6,38,0.72)'; X.fill();
+  X.shadowColor = col; X.shadowBlur = 30; X.lineWidth = 6; X.strokeStyle = col; X.stroke(); X.restore();
+}
+function rankHeader(it, lt, out) {
+  const k = prog(lt, LEAD - .05, LEAD + .3);
+  X.save(); X.globalAlpha = 1 - out;
+  X.save(); X.translate(W / 2, 300); X.rotate(-.05); const s = lerp(2.6, 1, eo(k)); X.scale(s, s);
+  outlined('#' + it.n, 0, 0, 170, '#FFFFFF', { stroke: 18, glow: it.col }); X.restore();
+  const k2 = prog(lt, LEAD + .25, LEAD + .55);
+  if (k2 > 0) { X.save(); X.translate(W / 2, 455); X.scale(lerp(.5, 1, eob(k2)), lerp(.5, 1, eob(k2))); X.globalAlpha *= clamp(k2 * 2); outlined(it.title, 0, 0, fit(it.title, 78, 920), it.col, { stroke: 14 }); X.restore(); }
+  const k3 = prog(lt, LEAD + .6, LEAD + .9);
+  if (k3 > 0) { X.globalAlpha *= k3; X.font = '28px M'; X.fillStyle = 'rgba(255,255,255,0.75)'; X.textAlign = 'center'; X.textBaseline = 'middle'; X.fillText(it.src, W / 2, 525); }
+  X.restore();
+}
+const HOT = /^(#?\d|\$|99|worst|slow|cutscenes|interrupt|combat|clunky|price|PC|30|Pro|13|perfect|Comment|subscribe|heists)/i;
+function captions(t) {
+  const s = SC.find(s => t >= s.v - .05 && t < s.ve + .35); if (!s) return;
+  const txt = CAPS[s.i], words = txt.split(' '); let ci = 0;
+  const ws = words.map(w => { const o = { w, t: s.v + (s.ve - s.v) * (ci / txt.length) * .96 }; ci += w.length + 1; return o; });
+  const chunks = []; let cur = [];
+  ws.forEach(w => { const len = cur.reduce((a, x) => a + x.w.length + 1, 0); if (cur.length && (cur.length >= 4 || len + w.w.length > 22)) { chunks.push(cur); cur = []; } cur.push(w); if (/[.,:!?]$/.test(w.w) && cur.length >= 2) { chunks.push(cur); cur = []; } });
+  if (cur.length) chunks.push(cur);
+  const ch = [...chunks].reverse().find(c => t >= c[0].t) || chunks[0];
+  if (t < ch[0].t - .05) return;
+  X.font = '78px IT'; const sp = 24, widths = ch.map(w => X.measureText(w.w).width);
+  const total = widths.reduce((a, b) => a + b, 0) + sp * (ch.length - 1), sc = Math.min(1, 940 / total);
+  let x = W / 2 - total * sc / 2;
+  ch.forEach((w, i) => {
+    const k = prog(t, w.t, w.t + .14); const next = ch[i + 1];
+    if (k > 0) {
+      const active = !next || t < next.t, size = 78 * sc * lerp(.6, 1, eob(k)) * (active ? 1.06 : 1);
+      outlined(w.w, x + widths[i] * sc / 2, 1400, size, HOT.test(w.w) ? '#FFE14D' : '#FFFFFF', { stroke: 16 });
+    }
+    x += (widths[i] + sp) * sc;
+  });
+}
+function glitch(t) {
+  for (const s of SC) {
+    const d = Math.abs(t - s.a); if (s.a === 0 || d > .14) continue;
+    const k = 1 - d / .14;
+    for (let i = 0; i < 9; i++) { const y = Math.floor(rand(i + Math.floor(t * 60)) * H), h = 20 + rand(i + 3) * 120, dx = (rand(i + 7 + Math.floor(t * 90)) - .5) * 160 * k; X.drawImage(C, 0, y, W, h, dx, y, W, h); }
+    X.save(); X.globalCompositeOperation = 'screen'; X.fillStyle = `rgba(255,0,180,${.25 * k})`; X.fillRect(-10 * k, 0, W, H); X.fillStyle = `rgba(0,240,255,${.2 * k})`; X.fillRect(10 * k, 0, W, H); X.restore();
+  }
+}
+function stamp(text, x, y, col, t0, t, rot = -.18, size = 84) {
+  const k = prog(t, t0, t0 + .16); if (k <= 0) return;
+  X.save(); X.translate(x, y); X.rotate(rot); const s = lerp(2.4, 1, eo(k)); X.scale(s, s); X.globalAlpha = clamp(k * 3);
+  X.font = `${size}px IT`; const w = X.measureText(text).width + 50;
+  rr(-w / 2, -size * .7, w, size * 1.4, 16); X.lineWidth = 10; X.strokeStyle = col; X.stroke();
+  X.fillStyle = col; X.textAlign = 'center'; X.textBaseline = 'middle'; X.fillText(text, 0, 6); X.restore();
+}
+
+// ------------------------------------------------------------------ scenes (lt = seconds since the scene started)
+function hook(lt, s) {
+  const k = prog(lt, .05, .4);
+  X.save(); X.translate(W / 2, 330); const sc = lerp(2.2, 1, eo(k)); X.scale(sc, sc);
+  outlined('GTA 6', 0, 0, 210, '#FFFFFF', { stroke: 20, glow: '#FF4FD8' }); X.restore();
+  const tb = wt(0, 'But') - s.a, tw = wt(0, 'worst') - s.a;
+  // score badge
+  const kb = prog(lt, .7, 1.0);
+  if (kb > 0) {
+    X.save(); X.translate(W / 2 + (lt > tb ? Math.sin(lt * 80) * 10 * (1 - prog(lt, tb, tb + .4)) : 0), 860); X.scale(eob(kb), eob(kb));
+    rr(-190, -190, 380, 380, 40); X.fillStyle = '#2BB24C'; X.fill(); X.lineWidth = 10; X.strokeStyle = '#fff'; X.stroke();
+    X.font = '220px IT'; X.fillStyle = '#fff'; X.textAlign = 'center'; X.textBaseline = 'middle'; X.fillText('99', 0, 14);
+    X.font = '30px I7'; X.fillText('CRITIC SCORE', 0, -150);
+    if (lt > tb) {                                   // crack it
+      const c = eo(prog(lt, tb, tb + .25)); X.strokeStyle = '#12051F'; X.lineWidth = 9; X.lineJoin = 'round';
+      X.beginPath(); const pts = [[-30, -190], [10, -90], [-40, -20], [30, 60], [-10, 130], [20, 190]];
+      pts.forEach(([x, y], i) => { if (i / (pts.length - 1) <= c) i ? X.lineTo(x, y) : X.moveTo(x, y); }); X.stroke();
+    }
+    X.restore();
+  }
+  if (lt > tb) { X.save(); X.translate(W / 2, 1110); X.rotate(-.06); const s2 = lerp(2.5, 1, eo(prog(lt, tb, tb + .2))); X.scale(s2, s2); outlined('BUT...', 0, 0, 130, '#FF3B5C', { stroke: 18 }); X.restore(); }
+  if (lt > tw) { X.save(); X.translate(W / 2, 500); X.scale(eob(prog(lt, tw, tw + .3)), eob(prog(lt, tw, tw + .3))); outlined('THE 6 WORST THINGS', 0, 0, 70, '#FFE14D', { stroke: 14 }); X.restore(); }
+}
+function slowStart(lt, s) {
+  const it = ITEMS[1], k = prog(lt, .2, .6); panel(it.col, k); if (k <= 0) return;
+  // clock
+  X.save(); X.translate(W / 2, 760); X.beginPath(); X.arc(0, 0, 130, 0, 7); X.fillStyle = '#fff'; X.fill(); X.lineWidth = 12; X.strokeStyle = it.col; X.stroke();
+  for (let i = 0; i < 12; i++) { const a = i / 12 * Math.PI * 2; X.fillStyle = '#12051F'; X.fillRect(Math.cos(a) * 105 - 4, Math.sin(a) * 105 - 4, 8, 8); }
+  X.strokeStyle = '#12051F'; X.lineCap = 'round'; X.lineWidth = 12; X.beginPath(); X.moveTo(0, 0); X.lineTo(Math.cos(lt * 6 - 1.57) * 85, Math.sin(lt * 6 - 1.57) * 85); X.stroke();
+  X.lineWidth = 16; X.beginPath(); X.moveTo(0, 0); X.lineTo(Math.cos(lt * .5 - 1.57) * 55, Math.sin(lt * .5 - 1.57) * 55); X.stroke(); X.restore();
+  // progress bar + snail
+  const p = .03 + .09 * prog(lt, .6, s.b - s.a);
+  rr(170, 1010, 740, 60, 30); X.fillStyle = '#2A1446'; X.fill(); rr(170, 1010, 740 * p, 60, 30); X.fillStyle = it.col; X.fill();
+  X.font = '34px IT'; X.fillStyle = '#fff'; X.textAlign = 'left'; X.textBaseline = 'middle'; X.fillText('FUN LOADING...', 175, 975); X.textAlign = 'right'; X.fillText(Math.round(p * 100) + '%', 905, 975);
+  X.save(); X.translate(170 + 740 * p + 40, 1040); X.scale(1 + Math.sin(lt * 6) * .04, 1 - Math.sin(lt * 6) * .04);
+  X.fillStyle = '#C7F464'; X.beginPath(); X.ellipse(0, 6, 60, 18, 0, 0, 7); X.fill();
+  X.beginPath(); X.arc(-10, -24, 34, 0, 7); X.fillStyle = '#E08A3C'; X.fill(); X.strokeStyle = '#8A4A1A'; X.lineWidth = 5; X.beginPath(); for (let a = 0; a < 12; a += .2) X.lineTo(-10 + Math.cos(a) * a * 2.4, -24 + Math.sin(a) * a * 2.4); X.stroke();
+  X.strokeStyle = '#C7F464'; X.lineWidth = 6; X.beginPath(); X.moveTo(48, 0); X.lineTo(62, -36); X.moveTo(40, 0); X.lineTo(44, -38); X.stroke(); X.fillStyle = '#12051F'; X.beginPath(); X.arc(62, -38, 6, 0, 7); X.arc(44, -40, 6, 0, 7); X.fill();
+  X.restore();
+}
+function cutscene(lt, s) {
+  const it = ITEMS[2], k = prog(lt, .2, .6); panel(it.col, k); if (k <= 0) return;
+  // vault + money bag, then letterbox bars slam in and the action freezes
+  const tc = wt(2, 'interrupt') - s.a, frozen = lt > tc;
+  X.save(); X.beginPath(); X.roundRect(110, 610, 860, 640, 36); X.clip();
+  X.save(); X.translate(W / 2 - 140, 940); X.beginPath(); X.arc(0, 0, 150, 0, 7); X.fillStyle = '#8A93A6'; X.fill(); X.lineWidth = 14; X.strokeStyle = '#5A6275'; X.stroke();
+  X.rotate(frozen ? 1.2 : lt * 3); X.strokeStyle = '#3A4150'; X.lineWidth = 16; for (let i = 0; i < 3; i++) { X.rotate(Math.PI * 2 / 3); X.beginPath(); X.moveTo(0, 0); X.lineTo(0, 100); X.stroke(); } X.restore();
+  X.save(); X.translate(W / 2 + 190, 980 - (frozen ? 0 : Math.abs(Math.sin(lt * 7)) * 30));
+  X.fillStyle = '#7CC36B'; X.beginPath(); X.ellipse(0, 20, 110, 120, 0, 0, 7); X.fill(); X.fillRect(-40, -120, 80, 40);
+  X.font = '120px IT'; X.fillStyle = '#2E6B2A'; X.textAlign = 'center'; X.textBaseline = 'middle'; X.fillText('$', 0, 30); X.restore();
+  if (frozen) {
+    const b = eo(prog(lt, tc, tc + .25)) * 150;
+    X.fillStyle = '#000'; X.fillRect(110, 610, 860, b); X.fillRect(110, 1250 - b, 860, b);
+    X.fillStyle = 'rgba(0,0,0,0.35)'; X.fillRect(110, 610, 860, 640);
+    X.fillStyle = '#fff'; X.fillRect(W / 2 - 50, 880, 34, 110); X.fillRect(W / 2 + 16, 880, 34, 110);
+    X.font = '40px IT'; X.textAlign = 'center'; X.textBaseline = 'middle'; X.fillText('CUTSCENE', W / 2, 1050);
+  }
+  X.restore();
+  if (frozen) stamp('ACTION PAUSED', W / 2, 1180, it.col, s.a + tc + .4, s.a + lt, -.1, 56);
+}
+function combat(lt, s) {
+  const it = ITEMS[3], k = prog(lt, .2, .6); panel(it.col, k); if (k <= 0) return;
+  X.save(); X.translate(W / 2, 900);
+  [150, 105, 60, 22].forEach((r, i) => { X.beginPath(); X.arc(0, 0, r, 0, 7); X.fillStyle = i % 2 ? '#fff' : '#FF3B5C'; X.fill(); });
+  const cx = Math.sin(lt * 3.1) * 190 + Math.sin(lt * 7.3) * 50, cy = Math.cos(lt * 2.3) * 150 + Math.sin(lt * 5.1) * 40;
+  X.strokeStyle = it.col; X.lineWidth = 8; X.beginPath(); X.arc(cx, cy, 55, 0, 7); X.moveTo(cx - 85, cy); X.lineTo(cx - 25, cy); X.moveTo(cx + 25, cy); X.lineTo(cx + 85, cy); X.moveTo(cx, cy - 85); X.lineTo(cx, cy - 25); X.moveTo(cx, cy + 25); X.lineTo(cx, cy + 85); X.stroke();
+  X.restore();
+  const misses = [1.2, 2.0]; misses.forEach((m, i) => { const kk = prog(lt, m, m + .15), o = prog(lt, m + .5, m + .8); if (kk > 0 && o < 1) { X.save(); X.globalAlpha = 1 - o; outlined('MISS', [300, 780][i], [720, 1080][i], 80 * eob(kk), '#FFFFFF', { stroke: 14 }); X.restore(); } });
+  stamp('CLUNKY', W / 2, 1150, it.col, wt(3, 'clunky') - .05, s.a + lt);
+}
+function price(lt, s) {
+  const it = ITEMS[4], k = prog(lt, .2, .6); panel(it.col, k); if (k <= 0) return;
+  const tag = (x, y, amt, label, t0, col) => {
+    const kk = prog(lt, t0, t0 + .3); if (kk <= 0) return;
+    X.save(); X.translate(x, y - (1 - eob(kk)) * 300); X.rotate(Math.sin(lt * 3 + x) * .08);
+    X.strokeStyle = '#fff'; X.lineWidth = 4; X.beginPath(); X.moveTo(0, -150); X.lineTo(0, -95); X.stroke();
+    X.beginPath(); X.moveTo(-150, -60); X.lineTo(-110, -100); X.lineTo(150, -100); X.lineTo(150, 100); X.lineTo(-110, 100); X.lineTo(-150, 60); X.closePath();
+    X.fillStyle = col; X.fill(); X.lineWidth = 8; X.strokeStyle = '#12051F'; X.stroke();
+    X.beginPath(); X.arc(-100, 0, 14, 0, 7); X.fillStyle = '#12051F'; X.fill();
+    X.font = '74px IT'; X.fillStyle = '#12051F'; X.textAlign = 'center'; X.textBaseline = 'middle'; X.fillText(amt, 25, -12); X.font = '28px IT'; X.fillText(label, 25, 52);
+    X.restore();
+  };
+  tag(W / 2, 820, '$79.99', 'STANDARD', wt(4, '$79') - s.a - .1, '#7CFF6B');
+  tag(W / 2, 1110, '$99.99', 'ULTIMATE', wt(4, '$99') - s.a - .1, '#FFE14D');
+  // flying cash
+  const t0 = wt(4, '$79') - s.a;
+  for (let i = 0; i < 10; i++) { const u = ((lt - t0) * .6 + rand(i)) % 1; if (lt < t0) break; const x = 160 + rand(i + 3) * 760, y = 640 + u * 600; X.save(); X.globalAlpha = .9 * Math.sin(u * Math.PI); X.translate(x, y); X.rotate(u * 6 + i); X.fillStyle = '#58C76B'; X.fillRect(-36, -18, 72, 36); X.fillStyle = '#2E6B2A'; X.font = '26px IT'; X.textAlign = 'center'; X.textBaseline = 'middle'; X.fillText('$', 0, 2); X.restore(); }
+}
+function noPC(lt, s) {
+  const it = ITEMS[5], k = prog(lt, .2, .6); panel(it.col, k); if (k <= 0) return;
+  X.save(); X.translate(W / 2, 830);
+  rr(-230, -150, 460, 290, 22); X.fillStyle = '#1B1F2E'; X.fill(); X.lineWidth = 12; X.strokeStyle = '#C9CED6'; X.stroke();
+  rr(-205, -125, 410, 240, 10); X.fillStyle = '#2A3150'; X.fill(); X.fillStyle = '#C9CED6'; X.fillRect(-30, 140, 60, 60); rr(-120, 195, 240, 26, 10); X.fill();
+  X.restore();
+  const tx = wt(5, 'No') - s.a + .3;
+  if (lt > tx) { const kk = eo(prog(lt, tx, tx + .25)); X.save(); X.translate(W / 2, 820); X.strokeStyle = '#FF3B5C'; X.lineWidth = 30; X.lineCap = 'round'; X.beginPath(); X.moveTo(-160 * kk, -110 * kk); X.lineTo(160 * kk, 110 * kk); X.moveTo(160 * kk, -110 * kk); X.lineTo(-160 * kk, 110 * kk); X.stroke(); X.restore(); }
+  const consoles = [['PS5', 330], ['XBOX SERIES X|S', 750]];
+  consoles.forEach(([n, x], i) => { const t0 = wt(5, 'console') - s.a + i * .2, kk = prog(lt, t0, t0 + .25); if (kk <= 0) return;
+    X.save(); X.translate(x, 1120); X.scale(eob(kk), eob(kk)); X.font = '36px IT'; const w = X.measureText(n).width + 100; rr(-w / 2, -40, w, 80, 40); X.fillStyle = '#2BB24C'; X.fill();
+    X.fillStyle = '#fff'; X.textAlign = 'center'; X.textBaseline = 'middle'; X.fillText(n, 20, 2); X.strokeStyle = '#fff'; X.lineWidth = 7; X.lineCap = 'round'; X.beginPath(); X.moveTo(-w / 2 + 26, 0); X.lineTo(-w / 2 + 38, 12); X.lineTo(-w / 2 + 58, -12); X.stroke(); X.restore(); });
+  stamp('NOT ANNOUNCED', W / 2, 1000, '#FF3B5C', wt(5, 'announced') - .05, s.a + lt, -.12, 60);
+}
+function fps(lt, s) {
+  const it = ITEMS[6], k = prog(lt, .2, .6); panel(it.col, k); if (k <= 0) return;
+  // big counter
+  const t30 = wt(6, '30 frames') - s.a;
+  const val = lt < t30 ? Math.round(lerp(60, 30, 0)) : 30;
+  X.save(); X.translate(W / 2, 760);
+  X.font = '210px IT'; X.textAlign = 'center'; X.textBaseline = 'middle';
+  const shown = lt < t30 ? 60 : Math.round(lerp(60, 30, eo(prog(lt, t30, t30 + .5))));
+  X.fillStyle = shown > 45 ? '#7CFF6B' : '#FF3B5C'; X.shadowColor = X.fillStyle; X.shadowBlur = 30; X.fillText(String(shown), -60, 0); X.shadowBlur = 0;
+  X.font = '70px IT'; X.fillStyle = '#fff'; X.fillText('FPS', 200, 30); X.restore();
+  // frame-time graph with dips
+  X.save(); X.beginPath(); X.rect(150, 900, 780, 150); X.clip(); X.strokeStyle = it.col; X.lineWidth = 6; X.beginPath();
+  for (let x = 0; x <= 780; x += 6) { const u = x / 780 * 6 + lt * 2; const dip = Math.max(0, Math.sin(u * 2.1) - .85) * 4 + Math.max(0, Math.sin(u * 3.7 + 1) - .9) * 6; const y = 950 + dip * 60 + Math.sin(u * 13) * 4; x ? X.lineTo(150 + x, y) : X.moveTo(150 + x, y); }
+  X.stroke(); X.restore();
+  X.font = '24px M'; X.fillStyle = 'rgba(255,255,255,0.7)'; X.textAlign = 'left'; X.fillText('frame drops reported on base consoles', 150, 885);
+  const rows = [['PS5', 'Every console'], ['XBOX SERIES X', 'Every console'], ['PS5 PRO', 'PS5 Pro']];
+  rows.forEach(([n, w], i) => { const t0 = wt(6, w) - s.a + i * .3, kk = prog(lt, t0, t0 + .2); if (kk <= 0) return;
+    const y = 1100 + i * 50; X.save(); X.globalAlpha = kk; X.translate((1 - eo(kk)) * 80, 0);
+    X.font = '36px IT'; X.fillStyle = '#fff'; X.textAlign = 'left'; X.textBaseline = 'middle'; X.fillText(n, 200, y);
+    X.fillStyle = '#FF3B5C'; X.textAlign = 'right'; X.fillText('30 FPS', 880, y);
+    X.fillStyle = '#FFE14D'; rr(892, y - 14, 26, 22, 4); X.fill(); X.strokeStyle = '#FFE14D'; X.lineWidth = 5; X.beginPath(); X.arc(905, y - 14, 9, Math.PI, 0); X.stroke(); X.restore(); });
+}
+function outro(lt, s) {
+  const k = prog(lt, .1, .45);
+  X.save(); X.translate(W / 2, 360); X.scale(lerp(.4, 1, eob(k)), lerp(.4, 1, eob(k))); X.rotate(-.03);
+  outlined('WORTH THE', 0, -70, 100, '#FFFFFF', { stroke: 18 }); outlined('13-YEAR WAIT?', 0, 50, 110, '#FFE14D', { stroke: 20, glow: '#FF4FD8' }); X.restore();
+  const yr = Math.round(lerp(2013, 2026, eio(prog(lt, .4, 2.0))));
+  panel('#FF4FD8', prog(lt, .3, .7));
+  X.save(); X.globalAlpha = prog(lt, .4, .7); X.font = '200px IT'; X.textAlign = 'center'; X.textBaseline = 'middle'; X.fillStyle = '#fff'; X.shadowColor = '#3DF2FF'; X.shadowBlur = 40; X.fillText(String(yr), W / 2, 870); X.shadowBlur = 0;
+  X.font = '40px I7'; X.fillStyle = 'rgba(255,255,255,0.8)'; X.fillText('GTA V  →  GTA 6', W / 2, 1010);
+  const kc = prog(lt, wt(7, 'Comment') - s.a, wt(7, 'Comment') - s.a + .3);
+  if (kc > 0) { X.globalAlpha = 1; X.translate(W / 2, 1150); X.scale(eob(kc), eob(kc)); outlined('COMMENT BELOW!', 0, 0, 66, '#3DF2FF', { stroke: 14 }); }
+  X.restore();
+}
+function cursor(x, y, press) {
+  X.save(); X.translate(x, y); const s = 1.3 * (1 - .15 * press); X.scale(s, s);
+  X.beginPath(); X.moveTo(0, 0); X.lineTo(0, 58); X.lineTo(15, 45); X.lineTo(27, 70); X.lineTo(38, 65); X.lineTo(27, 41); X.lineTo(46, 41); X.closePath();
+  X.fillStyle = '#fff'; X.fill(); X.strokeStyle = '#120D1F'; X.lineWidth = 4; X.lineJoin = 'round'; X.stroke(); X.restore();
+}
+const SUB_T = () => wt(7, 'subscribe') - .1;
+function subscribe(t) {
+  const t0 = SUB_T(), k = prog(t, t0, t0 + .45); if (k <= 0) return;
+  const tap = t0 + 1.0, done = t >= tap, press = pulse(t, tap - .06, .16);
+  X.save(); X.globalAlpha = clamp(k * 2.5); X.translate(W / 2, 1265 + (1 - eo(k)) * 160); const s = lerp(.7, 1, eob(k)); X.scale(s, s);
+  X.shadowColor = 'rgba(0,0,0,0.45)'; X.shadowBlur = 40; X.shadowOffsetY = 12; rr(-400, -70, 800, 140, 70); X.fillStyle = '#FFFFFF'; X.fill(); X.shadowColor = 'transparent';
+  X.beginPath(); X.arc(-326, 0, 48, 0, 7); const g = X.createLinearGradient(-374, -48, -278, 48); g.addColorStop(0, '#FF4FD8'); g.addColorStop(1, '#3DF2FF'); X.fillStyle = g; X.fill();
+  X.font = '40px IT'; X.fillStyle = '#fff'; X.textAlign = 'center'; X.textBaseline = 'middle'; X.fillText('6', -326, 2);
+  X.font = '36px I7'; X.fillStyle = '#0A0C11'; X.textAlign = 'left'; X.textBaseline = 'alphabetic'; X.fillText('Subscribe for more', -258, -6);
+  X.font = '24px I6'; X.fillStyle = '#6B7280'; X.fillText('gaming takes, no filler', -258, 30);
+  X.save(); X.translate(262, 0); const bs = 1 - .08 * press; X.scale(bs, bs); rr(-112, -40, 224, 80, 40); X.fillStyle = done ? '#E5E7EB' : '#FF0033'; X.fill();
+  X.font = (done ? 24 : 27) + 'px I7'; X.fillStyle = done ? '#4B5563' : '#FFFFFF'; X.textAlign = 'center'; X.textBaseline = 'middle'; X.fillText(done ? 'SUBSCRIBED' : 'SUBSCRIBE', 0, 2); X.restore();
+  if (done) { const r = prog(t, tap, tap + .5); X.beginPath(); X.arc(262, 0, 30 + 120 * eo(r), 0, 7); X.strokeStyle = `rgba(255,0,51,${.6 * (1 - r)})`; X.lineWidth = 6; X.stroke(); }
+  const m = eio(prog(t, t0 + .4, tap - .05)), out = eio(prog(t, tap + .35, tap + .8)); if (out < 1) cursor(lerp(420, 290, m) + out * 220, lerp(200, 22, m) + out * 160, press);
+  X.restore();
+}
+const DRAW = [hook, slowStart, cutscene, combat, price, noPC, fps, outro];
+
+// ------------------------------------------------------------------ sound cues
+SC.forEach((s, i) => { ev(s.v, 'vo', 1, i); if (i) { ev(s.a, 'glitch'); ev(s.v + .02, 'impact'); } });
+ev(.05, 'impact'); ev(.75, 'ding'); ev(wt(0, 'But'), 'scratch'); ev(wt(0, 'worst'), 'boom');
+ev(SC[1].a + .9, 'tick', .7);
+ev(wt(2, 'interrupt'), 'slam'); ev(wt(2, 'interrupt') + .45, 'stamp');
+ev(SC[3].a + 1.2, 'gunmiss'); ev(SC[3].a + 2.0, 'gunmiss'); ev(wt(3, 'clunky') - .05, 'stamp');
+ev(wt(4, '$79') - .1, 'register'); ev(wt(4, '$99') - .1, 'register');
+ev(wt(5, 'No') + .3, 'buzzer'); ev(wt(5, 'console'), 'pop'); ev(wt(5, 'console') + .2, 'pop'); ev(wt(5, 'announced') - .05, 'stamp');
+ev(wt(6, '30 frames'), 'powerdown'); ['Every console', 'PS5 Pro'].forEach(w => ev(wt(6, w), 'lock'));
+ev(SC[7].a + .4, 'riser'); ev(SUB_T(), 'pop'); ev(SUB_T() + .95, 'click');
+EVENTS.sort((a, b) => a.t - b.t);
+
+const ACC = ['#FF4FD8', '#3DF2FF', '#FF4FD8', '#FFE14D', '#7CFF6B', '#B36BFF', '#FF3B5C', '#FF4FD8'];
+function render(t) {
+  X.setTransform(1, 0, 0, 1, 0, 0); X.globalAlpha = 1;
+  const s = [...SC].reverse().find(s => t >= s.a) || SC[0];
+  background(t, ACC[s.i]);
+  const lt = t - s.a;
+  DRAW[s.i](lt, s);
+  if (ITEMS[s.i]) rankHeader(ITEMS[s.i], lt, 0);
+  captions(t); subscribe(t);
+  glitch(t);
+}
+window.render = render; window.TOTAL = TOTAL; window.EVENTS = EVENTS;
+window.SECTIONS = { scenes: SC.map(s => s.a), end: TOTAL };
+</script>
+</body></html>
